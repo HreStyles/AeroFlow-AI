@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "cwd": "backend",
+      "runtimeExecutable": ".venv/bin/uvicorn",
+      "runtimeArgs": ["main:app", "--port", "8000"],
+      "port": 8000
+    },
+    {
+      "name": "frontend",
+      "cwd": "frontend",
+      "runtimeExecutable": "/Users/hrehaanshah/tools/node/bin/npm",
+      "runtimeArgs": ["run", "dev"],
+      "env": { "PATH": "/Users/hrehaanshah/tools/node/bin:/usr/bin:/bin:/usr/sbin:/sbin" },
+      "port": 5173
+    }
+  ]
+}

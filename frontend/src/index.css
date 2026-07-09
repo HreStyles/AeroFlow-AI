@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --aero-bg: #0a0f1a;
+  --aero-card: #111827;
+  --aero-border: #1e293b;
+  --aero-red: #ef4444;
+  --aero-green: #22c55e;
+  --aero-blue: #3b82f6;
+  --aero-amber: #f59e0b;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-aero-bg text-aero-text font-sans antialiased;
+}
+
+/* Dense operations-tool scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--aero-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--aero-border);
+  border-radius: 4px;
+}
+
+@layer components {
+  .aero-card {
+    @apply bg-aero-card border border-aero-border rounded-lg;
+  }
+  .aero-label {
+    @apply text-[10px] font-semibold uppercase tracking-wider text-aero-muted;
+  }
+  .aero-input {
+    @apply w-full bg-aero-bg border border-aero-border rounded px-2 py-1.5 text-sm
+      focus:outline-none focus:border-aero-blue placeholder:text-slate-600;
+  }
+  .aero-btn {
+    @apply px-3 py-1.5 rounded text-sm font-medium border border-aero-border
+      hover:border-aero-blue transition-colors disabled:opacity-40
+      disabled:cursor-not-allowed;
+  }
+  .aero-btn-primary {
+    @apply aero-btn bg-aero-blue border-aero-blue text-white hover:bg-blue-600;
+  }
+}
+
+@keyframes pulse-alert {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.animate-pulse-alert {
+  animation: pulse-alert 1.6s ease-in-out infinite;
+}

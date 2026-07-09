@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+myenv/
+Python_Project.venv/
+*.egg-info/
+
+# Trained model artifacts (regenerate via scripts/train_all.py)
+backend/models/saved/*.txt
+backend/models/saved/*.pkl
+backend/models/saved/*.json
+
+# Data (downloaded via scripts/download_*.sh)
+backend/data/raw/
+backend/data/processed/
+backend/data/decisions.jsonl
+backend/data/presets/generated/
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+*.log
