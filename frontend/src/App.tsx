@@ -1,4 +1,7 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
+import "@fontsource-variable/inter";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/600.css";
 import "./index.css";
 import { ScenarioProvider } from "./hooks/useScenario";
 import LandingPage from "./pages/LandingPage";

@@ -38,6 +38,14 @@ PARAMS = {
 MAX_ROUNDS = 3000
 EARLY_STOP = 100
 
+# tune.py saves its winning config here; use it when present
+_BEST_PARAMS = Path(__file__).resolve().parents[1] / "saved" / "best_params.json"
+if _BEST_PARAMS.exists():
+    import json as _json
+    with open(_BEST_PARAMS) as _fp:
+        PARAMS = {**_json.load(_fp), "verbosity": -1, "seed": 42}
+    print(f"Using tuned hyperparameters from {_BEST_PARAMS}")
+
 
 def _walk_forward_folds(train_df: pd.DataFrame):
     """Expanding-window monthly folds: train ≤ month m, validate on m+1."""

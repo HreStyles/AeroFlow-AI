@@ -23,10 +23,18 @@ export default function OptionsTable({
   const options = (recommendation?.details.ranked_options ?? []) as RankedOption[];
 
   return (
-    <div className="aero-card p-3 h-full flex flex-col min-h-0">
-      <span className="aero-label mb-2">AI options — ranked comparison</span>
+    <div className="aero-card h-full flex flex-col min-h-0">
+      <div className="panel-header">
+        <span className="panel-title">AI options — ranked comparison</span>
+        {options.length > 0 && (
+          <span className="ml-auto text-[9px] font-mono text-aero-muted">
+            click a row to select for override
+          </span>
+        )}
+      </div>
       {options.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-aero-muted text-xs">
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-aero-muted text-xs">
+          <span className="text-2xl opacity-40">≣</span>
           No options generated yet
         </div>
       ) : (

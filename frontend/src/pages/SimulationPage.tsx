@@ -109,6 +109,7 @@ export default function SimulationPage() {
               simTime={sim.simTime}
               flightDelays={sim.flightDelays}
               flightStatus={sim.flightStatus}
+              activePrediction={sim.activePrediction}
               activeRecommendation={sim.activeRecommendation}
               activeCascade={sim.activeCascade}
               gdpActive={!!sim.activeGdp}
@@ -146,6 +147,9 @@ export default function SimulationPage() {
           <EventTimeline
             markers={markers}
             progressPct={progressPct}
+            startTime={sim.startTime}
+            endTime={sim.endTime}
+            simTime={sim.simTime}
             onJump={sim.jumpToEvent}
           />
         </div>

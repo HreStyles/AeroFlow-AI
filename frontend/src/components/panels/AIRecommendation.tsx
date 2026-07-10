@@ -13,10 +13,15 @@ interface Props {
 export default function AIRecommendation({ recommendation, cascade }: Props) {
   if (!recommendation) {
     return (
-      <div className="aero-card p-3 h-full flex flex-col">
-        <span className="aero-label">AI recommendation</span>
-        <div className="flex-1 flex items-center justify-center text-aero-muted text-xs text-center px-4">
-          Recommendations appear here when a disruption cascade is detected
+      <div className="aero-card h-full flex flex-col">
+        <div className="panel-header">
+          <span className="panel-title">AI recommendation</span>
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-aero-muted text-center px-6">
+          <span className="text-2xl opacity-40">◎</span>
+          <span className="text-xs leading-relaxed">
+            The MILP optimizer engages when a disruption cascade is detected
+          </span>
         </div>
       </div>
     );
@@ -27,14 +32,15 @@ export default function AIRecommendation({ recommendation, cascade }: Props) {
   const baseline = cascade?.details.baseline_cost ?? top.expected_cost;
 
   return (
-    <div className="aero-card p-3 h-full flex flex-col gap-3 overflow-y-auto border-l-2 border-l-aero-blue">
-      <div className="flex items-center justify-between">
-        <span className="aero-label text-aero-blue">🤖 AI recommendation</span>
-        <span className="font-mono text-[10px] text-aero-muted">
+    <div className="aero-card h-full flex flex-col border-l-2 border-l-aero-blue overflow-hidden animate-slide-in">
+      <div className="panel-header bg-blue-500/[0.06]">
+        <span className="text-aero-blue text-xs">◎</span>
+        <span className="panel-title text-blue-300">AI recommendation</span>
+        <span className="ml-auto font-mono text-[9px] text-aero-muted">
           {recommendation.details.recommendation_id}
         </span>
       </div>
-
+      <div className="p-3 flex flex-col gap-3 overflow-y-auto">
       <div>
         <div className="text-[10px] uppercase text-aero-muted mb-0.5">
           Recommended action · rank #1
@@ -100,6 +106,7 @@ export default function AIRecommendation({ recommendation, cascade }: Props) {
         <span>
           solved in {(recommendation.details.solver_time_seconds ?? 0).toFixed(2)}s
         </span>
+      </div>
       </div>
     </div>
   );

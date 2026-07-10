@@ -17,8 +17,12 @@ export default {
         },
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+        sans: ["Inter Variable", "Inter", "system-ui", "-apple-system", "sans-serif"],
         mono: ["JetBrains Mono", "SFMono-Regular", "Menlo", "monospace"],
+      },
+      boxShadow: {
+        panel: "0 1px 2px rgba(0,0,0,0.4), 0 8px 24px -12px rgba(0,0,0,0.5)",
+        glow: "0 0 12px rgba(59,130,246,0.35)",
       },
     },
   },

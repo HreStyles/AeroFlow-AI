@@ -47,8 +47,15 @@ export default function LiveDataFeeds({
     "low";
 
   return (
-    <div className="aero-card p-3 h-full flex flex-col gap-2 overflow-y-auto">
-      <span className="aero-label">Live data feeds</span>
+    <div className="aero-card h-full flex flex-col overflow-hidden">
+      <div className="panel-header">
+        <span className="panel-title">Live data feeds</span>
+        <span className="ml-auto flex items-center gap-1 text-[9px] font-mono text-aero-green">
+          <span className="w-1.5 h-1.5 rounded-full bg-aero-green animate-pulse-alert" />
+          LIVE
+        </span>
+      </div>
+      <div className="p-3 flex flex-col gap-2 overflow-y-auto">
 
       <div className="grid grid-cols-2 gap-2 text-[11px]">
         <div className="bg-aero-bg rounded p-2">
@@ -114,6 +121,7 @@ export default function LiveDataFeeds({
             );
           })}
         </div>
+      </div>
       </div>
     </div>
   );
