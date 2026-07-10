@@ -78,9 +78,11 @@ def evaluate(test_path: Path | None = None) -> dict:
             # quantile — should be ≈ alpha for a calibrated model
             "empirical_coverage": round(float(np.mean(y_reg <= pred)), 4),
         }
-    report["quantile"]["p50_mae"] = round(
-        float(np.mean(np.abs(y_reg - preds["p50"]))), 2
-    )
+    # Point-prediction accuracy using the median (P50) as the point estimate
+    report["quantile"]["point_prediction"] = {
+        "mae_minutes": round(float(np.mean(np.abs(y_reg - preds["p50"]))), 2),
+        "rmse_minutes": round(float(np.sqrt(np.mean((y_reg - preds["p50"]) ** 2))), 2),
+    }
     report["quantile"]["interval_80_coverage"] = round(
         float(np.mean((y_reg >= preds["p10"]) & (y_reg <= preds["p90"]))), 4
     )

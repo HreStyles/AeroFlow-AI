@@ -9,7 +9,9 @@ Every field entering the pipeline is tagged with provenance:
 REQUIRED fields with no safe default (aircraft_type is the canonical example)
 are rejected with a clear error rather than guessed.
 """
+import json
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 from config import (
     BOARDING_RATE,
@@ -20,9 +22,29 @@ from config import (
     DEFAULT_CREW_DUTY_HOURS_BEFORE,
     DEFAULT_LOAD_FACTOR,
     DEPLANING_RATE,
+    LOOKUPS_PATH,
     WAKE_CATEGORY_MAP,
     WIDE_BODIES,
 )
+
+
+@lru_cache(maxsize=1)
+def _trained_lookups() -> dict:
+    """Historical lookups produced by the training pipeline (optional)."""
+    if LOOKUPS_PATH.exists():
+        with open(LOOKUPS_PATH) as fp:
+            return json.load(fp)
+    return {}
+
+
+def _connection_rate_for(airport: str) -> tuple[float, str]:
+    """DB1B-derived hub connection rate when trained lookups exist,
+    otherwise the documented default."""
+    rates = _trained_lookups().get("connection_rates_db1b", {})
+    if airport in rates:
+        entry = rates[airport]
+        return entry["connection_rate"], f"DB1B-derived for {airport}"
+    return DEFAULT_CONNECTION_RATE, "hub average"
 
 REQUIRED_FIELDS = [
     "flight_id", "carrier_code", "flight_number", "tail_number",
@@ -87,13 +109,13 @@ def validate_and_complete(flight: dict, airport_config: dict) -> tuple[dict, dic
     else:
         provenance["total_passengers"] = "user_provided"
 
-    # Connecting passengers ← hub connection rate (DB1B aggregate)
+    # Connecting passengers ← hub connection rate (DB1B-derived when trained
+    # lookups exist; connections happen at the hub the flight arrives into)
     if flight.get("connecting_passengers") is None:
-        flight["connecting_passengers"] = int(
-            flight["total_passengers"] * DEFAULT_CONNECTION_RATE
-        )
+        rate, rate_source = _connection_rate_for(flight["destination"])
+        flight["connecting_passengers"] = int(flight["total_passengers"] * rate)
         provenance["connecting_passengers"] = (
-            f"assumed_default (connection_rate={DEFAULT_CONNECTION_RATE})"
+            f"assumed_default (connection_rate={rate}, {rate_source})"
         )
     else:
         provenance["connecting_passengers"] = "user_provided"

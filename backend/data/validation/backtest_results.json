@@ -1,0 +1,250 @@
+{
+  "available": true,
+  "type": "monte_carlo_stress",
+  "n_scenarios": 20,
+  "n_failed": 0,
+  "avg_cost_reduction_vs_do_nothing_pct": 0.1,
+  "avg_stability_pct": 100.0,
+  "results": [
+    {
+      "scenario_id": "mc_atl_00000",
+      "n_events": 36,
+      "baseline_costs": {
+        "do_nothing": 4709.25,
+        "random": 4709.25,
+        "greedy": 4709.25,
+        "milp": 4709.25
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00001",
+      "n_events": 105,
+      "baseline_costs": {
+        "do_nothing": 67463.75,
+        "random": 67463.75,
+        "greedy": 67463.75,
+        "milp": 67463.75
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00002",
+      "n_events": 46,
+      "baseline_costs": {
+        "do_nothing": 29564.0,
+        "random": 29564.0,
+        "greedy": 29564.0,
+        "milp": 29564.0
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00003",
+      "n_events": 26,
+      "baseline_costs": {
+        "do_nothing": 26266.0,
+        "random": 26266.0,
+        "greedy": 26266.0,
+        "milp": 26266.0
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00004",
+      "n_events": 48,
+      "baseline_costs": {
+        "do_nothing": 3436.5,
+        "random": 3436.5,
+        "greedy": 3436.5,
+        "milp": 3436.5
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00005",
+      "n_events": 57,
+      "baseline_costs": {
+        "do_nothing": 0.0,
+        "random": 0.0,
+        "greedy": 0.0,
+        "milp": 0.0
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00006",
+      "n_events": 59,
+      "baseline_costs": {
+        "do_nothing": 6699.0,
+        "random": 6699.0,
+        "greedy": 6699.0,
+        "milp": 6699.0
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00007",
+      "n_events": 84,
+      "baseline_costs": {
+        "do_nothing": 47419.75,
+        "random": 46919.75,
+        "greedy": 46919.75,
+        "milp": 46919.75
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00008",
+      "n_events": 32,
+      "baseline_costs": {
+        "do_nothing": 17509.25,
+        "random": 17509.25,
+        "greedy": 17509.25,
+        "milp": 17509.25
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_atl_00009",
+      "n_events": 55,
+      "baseline_costs": {
+        "do_nothing": 10492.25,
+        "random": 10492.25,
+        "greedy": 10492.25,
+        "milp": 10492.25
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00000",
+      "n_events": 31,
+      "baseline_costs": {
+        "do_nothing": 16943.75,
+        "random": 16943.75,
+        "greedy": 16943.75,
+        "milp": 16943.75
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00001",
+      "n_events": 105,
+      "baseline_costs": {
+        "do_nothing": 58262.25,
+        "random": 58262.25,
+        "greedy": 58262.25,
+        "milp": 58262.25
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00002",
+      "n_events": 46,
+      "baseline_costs": {
+        "do_nothing": 29519.0,
+        "random": 29519.0,
+        "greedy": 29519.0,
+        "milp": 29519.0
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00003",
+      "n_events": 26,
+      "baseline_costs": {
+        "do_nothing": 26358.0,
+        "random": 26358.0,
+        "greedy": 26358.0,
+        "milp": 26358.0
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00004",
+      "n_events": 61,
+      "baseline_costs": {
+        "do_nothing": 10756.75,
+        "random": 10756.75,
+        "greedy": 10756.75,
+        "milp": 10756.75
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00005",
+      "n_events": 66,
+      "baseline_costs": {
+        "do_nothing": 17611.25,
+        "random": 17611.25,
+        "greedy": 17611.25,
+        "milp": 17611.25
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00006",
+      "n_events": 56,
+      "baseline_costs": {
+        "do_nothing": 2567.5,
+        "random": 2567.5,
+        "greedy": 2567.5,
+        "milp": 2567.5
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00007",
+      "n_events": 84,
+      "baseline_costs": {
+        "do_nothing": 52915.0,
+        "random": 52415.0,
+        "greedy": 52415.0,
+        "milp": 52415.0
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00008",
+      "n_events": 29,
+      "baseline_costs": {
+        "do_nothing": 13401.25,
+        "random": 13401.25,
+        "greedy": 13401.25,
+        "milp": 13401.25
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    },
+    {
+      "scenario_id": "mc_jfk_00009",
+      "n_events": 55,
+      "baseline_costs": {
+        "do_nothing": 8098.0,
+        "random": 8098.0,
+        "greedy": 8098.0,
+        "milp": 8098.0
+      },
+      "optimality_gap_pct": 0.0,
+      "stable_pct": 100
+    }
+  ]
+}

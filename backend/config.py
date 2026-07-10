@@ -22,7 +22,7 @@ CLASSIFIER_PATH = MODELS_DIR / "classifier.txt"
 # base name — actual files are quantile_p10.txt / quantile_p50.txt / quantile_p90.txt.
 QUANTILE_PATH = MODELS_DIR / "quantile.txt"
 LOOKUPS_PATH = MODELS_DIR / "lookups.json"
-EVALUATION_REPORT_PATH = MODELS_DIR / "evaluation_report.json"
+EVALUATION_REPORT_PATH = PROCESSED_DATA_DIR / "evaluation_report.json"
 SHAP_GLOBAL_PATH = MODELS_DIR / "shap_global.json"
 
 MODEL_NOT_TRAINED_MESSAGE = (

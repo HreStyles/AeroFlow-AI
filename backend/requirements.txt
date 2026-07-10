@@ -8,3 +8,4 @@ lightgbm>=4.5
 shap>=0.46
 ortools>=9.11
 matplotlib>=3.9
+pyarrow>=17

@@ -1,4 +1,5 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
+import "./index.css";
 import { ScenarioProvider } from "./hooks/useScenario";
 import LandingPage from "./pages/LandingPage";
 import PresetsPage from "./pages/PresetsPage";
