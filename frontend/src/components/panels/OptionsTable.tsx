@@ -44,11 +44,15 @@ export default function OptionsTable({
               <tr className="text-left text-aero-muted uppercase text-[9px] tracking-wider">
                 <th className="py-1 pr-2">#</th>
                 <th className="py-1 pr-2">Action</th>
-                <th className="py-1 pr-2 text-right">Cost</th>
+                <th className="py-1 pr-2 text-right" title="Weighted expected cost over the P10/P50/P90 delay outcomes (0.25/0.50/0.25)">
+                  E[Cost]
+                </th>
+                <th className="py-1 pr-2 text-right" title="Cost if the delay lands at the optimistic (P10) vs tail (P90) end of the predicted distribution">
+                  P10–P90 range
+                </th>
                 <th className="py-1 pr-2 text-right">Reduction</th>
                 <th className="py-1 pr-2 text-right">Delay Δ</th>
                 <th className="py-1 pr-2">Downstream</th>
-                <th className="py-1 pr-2 text-right">Success</th>
               </tr>
             </thead>
             <tbody>
@@ -72,8 +76,11 @@ export default function OptionsTable({
                   <td className="py-1.5 pr-2 max-w-[320px] truncate" title={o.action}>
                     {o.action}
                   </td>
-                  <td className="py-1.5 pr-2 text-right font-mono">
+                  <td className="py-1.5 pr-2 text-right font-mono font-semibold">
                     {formatCost(o.expected_cost)}
+                  </td>
+                  <td className="py-1.5 pr-2 text-right font-mono text-aero-muted whitespace-nowrap">
+                    {formatCost(o.expected_cost_p10)}–{formatCost(o.expected_cost_p90)}
                   </td>
                   <td
                     className={`py-1.5 pr-2 text-right font-mono ${
@@ -87,9 +94,6 @@ export default function OptionsTable({
                   </td>
                   <td className={`py-1.5 pr-2 ${IMPACT_COLOR[o.downstream_impact] ?? ""}`}>
                     {o.downstream_impact}
-                  </td>
-                  <td className="py-1.5 pr-2 text-right font-mono">
-                    {Math.round(o.success_probability * 100)}%
                   </td>
                 </tr>
               ))}

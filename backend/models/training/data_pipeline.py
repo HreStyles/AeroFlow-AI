@@ -421,25 +421,15 @@ def build_features(ontime: pd.DataFrame, weather_hourly: pd.DataFrame,
     df["origin_weather_severity"] = df["origin_weather_severity"].fillna(0.15)
     df["dest_weather_severity"] = df["dest_weather_severity"].fillna(0.15)
 
-    # Congestion proxy: scheduled ops in the same hour at the airport, scaled
-    # by that airport's 95th-percentile hour (pure schedule data → causal)
+    # Congestion proxy inputs: scheduled ops in the same hour at the airport.
+    # The raw counts are pure schedule data (known in advance → causal). The
+    # p95 NORMALIZER, however, is a fitted constant and therefore must be
+    # computed on the training window only — that happens in
+    # split_and_aggregate, alongside route averages, to avoid split leakage.
     dep_counts = df.groupby(["Origin", "dep_hour_ts"]).size().rename("dep_count")
     df = df.merge(dep_counts, on=["Origin", "dep_hour_ts"], how="left")
-    dep_p95 = df.groupby("Origin")["dep_count"].transform(
-        lambda s: max(s.quantile(0.95), 1)
-    )
-    df["origin_congestion_numeric"] = (df["dep_count"] / dep_p95).clip(0, 1).round(3)
-
     arr_counts = df.groupby(["Dest", "arr_hour_ts"]).size().rename("arr_count")
     df = df.merge(arr_counts, on=["Dest", "arr_hour_ts"], how="left")
-    arr_p95 = df.groupby("Dest")["arr_count"].transform(
-        lambda s: max(s.quantile(0.95), 1)
-    )
-    df["dest_congestion_numeric"] = (df["arr_count"] / arr_p95).clip(0, 1).round(3)
-
-    df["weather_x_congestion"] = (
-        df["origin_weather_severity"] * df["origin_congestion_numeric"]
-    )
     return df
 
 
@@ -461,6 +451,16 @@ def split_and_aggregate(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, d
     route_map = {f"{o}_{d}": float(v) for (o, d), v in route_avg.items()}
     carrier_map = {c: {"ontime_pct": float(v)} for c, v in carrier_otp.items()}
 
+    # Congestion p95 normalizers — TRAIN ONLY (fitted constants must never see
+    # the test window; same rule as route averages). Unseen airports fall back
+    # to the train-wide global p95.
+    dep_p95 = train.groupby("Origin")["dep_count"].quantile(0.95).clip(lower=1)
+    arr_p95 = train.groupby("Dest")["arr_count"].quantile(0.95).clip(lower=1)
+    dep_global = max(float(train["dep_count"].quantile(0.95)), 1.0)
+    arr_global = max(float(train["arr_count"].quantile(0.95)), 1.0)
+    dep_p95_map = {k: float(v) for k, v in dep_p95.items()}
+    arr_p95_map = {k: float(v) for k, v in arr_p95.items()}
+
     for frame in (train, test):
         frame["route_avg_delay"] = (
             (frame["Origin"] + "_" + frame["Dest"]).map(route_map).fillna(15.0)
@@ -468,7 +468,29 @@ def split_and_aggregate(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, d
         frame["carrier_ontime_pct"] = frame["Reporting_Airline"].map(
             lambda c: carrier_map.get(c, {}).get("ontime_pct", 0.78)
         )
-    return train, test, {"route_averages": route_map, "carrier_stats": carrier_map}
+        frame["origin_congestion_numeric"] = (
+            frame["dep_count"] / frame["Origin"].map(dep_p95_map).fillna(dep_global)
+        ).clip(0, 1).round(3)
+        frame["dest_congestion_numeric"] = (
+            frame["arr_count"] / frame["Dest"].map(arr_p95_map).fillna(arr_global)
+        ).clip(0, 1).round(3)
+        frame["weather_x_congestion"] = (
+            frame["origin_weather_severity"] * frame["origin_congestion_numeric"]
+        )
+
+    return train, test, {
+        "route_averages": route_map,
+        "carrier_stats": carrier_map,
+        "congestion_p95": {
+            "departures_per_hour": dep_p95_map,
+            "arrivals_per_hour": arr_p95_map,
+            "global_departures": dep_global,
+            "global_arrivals": arr_global,
+            "note": "train-window-only 95th-percentile hourly ops; divide "
+                    "scheduled ops/hr by these to reproduce the congestion "
+                    "features at inference time",
+        },
+    }
 
 
 # ─── Orchestration ───────────────────────────────────────────────────────────

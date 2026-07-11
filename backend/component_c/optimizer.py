@@ -1,22 +1,31 @@
 """
 Component C — MILP optimization engine (Google OR-Tools).
 
-Evaluates candidate response actions via re-simulation + the configurable
-cost function, and solves the gate-assignment sub-problem exactly as a
-binary assignment MILP:
+Distribution-aware: every candidate action is costed under the P10, P50, and
+P90 predicted delays (three cascade simulations) and ranked by the weighted
+expected cost E[C] = 0.25·C(P10) + 0.50·C(P50) + 0.25·C(P90) — a 3-point
+quadrature over the predictive distribution. Hard-constraint feasibility
+(crew legality etc.) is checked at P90, i.e. robustly against the tail.
+
+The gate-assignment sub-problem is solved exactly as a binary MILP:
     variables    x[f,g] = 1 iff flight f is assigned to gate g
     objective    minimize reassignment cost
     constraints  one gate per flight; overlapping flights can't share a gate;
                  aircraft-gate type compatibility
-Returns ranked options with expected cost, cost reduction %, delay impact,
-downstream impact rating, success probability, optimality gap %, feasibility
-checks, and a human-readable rationale.
+Returns ranked options with expected cost (plus its per-quantile components),
+cost reduction %, delay impact, downstream impact rating, optimality gap %,
+feasibility checks, and a human-readable rationale.
 """
 import time
 
 from ortools.linear_solver import pywraplp
 
-from config import DEFAULT_COST_WEIGHTS, MILP_SOLVERS, MILP_TIME_LIMIT_MS
+from config import (
+    DEFAULT_COST_WEIGHTS,
+    MILP_SOLVERS,
+    MILP_TIME_LIMIT_MS,
+    QUANTILE_WEIGHTS,
+)
 from component_b.operational_graph import parse_time, turnaround_time
 from .action_generator import generate_candidate_actions
 from .cost_function import compute_action_cost
@@ -30,56 +39,87 @@ def create_solver():
     return None, None
 
 
+def expected_over_quantiles(costs: dict[str, float]) -> float:
+    """Weighted expected value over the 3-point delay quadrature."""
+    return sum(QUANTILE_WEIGHTS[q] * costs[q] for q in QUANTILE_WEIGHTS)
+
+
 class MILPOptimizer:
     def __init__(self, cost_weights: dict | None = None):
         self.cost_weights = {**DEFAULT_COST_WEIGHTS, **(cost_weights or {})}
 
-    def optimize(self, cascade_result: dict, flights: dict,
+    def optimize(self, cascades: dict, flights: dict,
                  airport_config: dict, simulation_engine) -> dict:
-        """Rank feasible responses to a cascade, cheapest first."""
-        candidates = generate_candidate_actions(cascade_result, flights, airport_config)
+        """Rank feasible responses, cheapest expected cost first.
 
-        milp_result = self._solve_gate_assignment_milp(
-            cascade_result, flights, airport_config
-        )
+        `cascades` is either {"p10": CascadeResult, "p50": …, "p90": …} —
+        the same trigger delay propagated at each predicted quantile — or a
+        single CascadeResult, which is treated as a degenerate (point-mass)
+        distribution for backward compatibility.
+        """
+        if "trigger_flight" in cascades:  # single cascade → point mass
+            cascades = {q: cascades for q in QUANTILE_WEIGHTS}
+        c50 = cascades["p50"]
+        c90 = cascades["p90"]
+
+        # Candidates are generated from the P90 view: the tail scenario has
+        # the superset of impacts (extra affected rotations, missed
+        # connections), so no action relevant at any quantile is missed.
+        candidates = generate_candidate_actions(c90, flights, airport_config)
+
+        milp_result = self._solve_gate_assignment_milp(c90, flights, airport_config)
 
         evaluated = []
         for candidate in candidates:
-            cost, feasibility, sim_result = compute_action_cost(
-                candidate, cascade_result, flights, airport_config,
-                simulation_engine, self.cost_weights,
-            )
+            costs, sims = {}, {}
+            feasibility = None
+            for q, cascade_q in cascades.items():
+                cost_q, feas_q, sim_q = compute_action_cost(
+                    candidate, cascade_q, flights, airport_config,
+                    simulation_engine, self.cost_weights,
+                )
+                costs[q] = cost_q
+                sims[q] = sim_q
+                if q == "p90":
+                    feasibility = feas_q  # robust: constraints hold at the tail
             if feasibility["all_satisfied"]:
                 evaluated.append({
                     "action": candidate,
-                    "expected_cost": cost,
+                    "costs": costs,
+                    "expected_cost": expected_over_quantiles(costs),
                     "feasibility_checks": feasibility,
-                    "sim_result": sim_result,
+                    "sim_result": sims["p50"],
                 })
 
-        # Do-nothing competes on cost like any other option — an action that
-        # costs more than absorbing the disruption must never outrank it.
+        # Do-nothing competes on expected cost like any other option — an
+        # action that costs more than absorbing the disruption must never
+        # outrank it.
+        baseline_costs = {q: cascades[q]["baseline_cost"] for q in QUANTILE_WEIGHTS}
+        expected_baseline = expected_over_quantiles(baseline_costs)
         evaluated.append({
             "action": {"type": "do_nothing",
                        "description": "Hold and absorb — no action taken"},
-            "expected_cost": cascade_result["baseline_cost"],
+            "costs": baseline_costs,
+            "expected_cost": expected_baseline,
             "feasibility_checks": {
                 "gate_compatible": True, "aircraft_type_match": True,
                 "crew_legal": True, "all_satisfied": True,
             },
-            "sim_result": dict(cascade_result),
+            "sim_result": dict(c50),
         })
         evaluated.sort(key=lambda x: x["expected_cost"])
 
         ranked = []
-        baseline = cascade_result["baseline_cost"]
         for i, e in enumerate(evaluated[:4]):
-            reduction = ((baseline - e["expected_cost"]) / baseline * 100) if baseline > 0 else 0.0
+            reduction = (
+                (expected_baseline - e["expected_cost"]) / expected_baseline * 100
+                if expected_baseline > 0 else 0.0
+            )
             delay_avoided = (
-                cascade_result["total_downstream_delay_minutes"]
+                c50["total_downstream_delay_minutes"]
                 - e["sim_result"].get(
                     "total_downstream_delay_minutes",
-                    cascade_result["total_downstream_delay_minutes"],
+                    c50["total_downstream_delay_minutes"],
                 )
             )
             ranked.append({
@@ -88,16 +128,18 @@ class MILPOptimizer:
                 "action_type": e["action"]["type"],
                 "action_details": e["action"],
                 "expected_cost": round(e["expected_cost"], 2),
+                "expected_cost_p10": round(e["costs"]["p10"], 2),
+                "expected_cost_p50": round(e["costs"]["p50"], 2),
+                "expected_cost_p90": round(e["costs"]["p90"], 2),
                 "cost_reduction_pct": round(reduction, 1),
                 "delay_impact_minutes": round(-delay_avoided, 1),
                 "downstream_impact": self._classify_impact(e["sim_result"]),
-                "success_probability": self._estimate_success_prob(e),
                 "optimality_gap_pct": milp_result.get("gap_pct") or 0.0,
                 "feasibility_checks": {
                     k: v for k, v in e["feasibility_checks"].items()
                     if k != "all_satisfied"
                 },
-                "rationale": self._generate_rationale(e, cascade_result),
+                "rationale": self._generate_rationale(e, c50, expected_baseline),
             })
 
         return {
@@ -106,6 +148,16 @@ class MILPOptimizer:
             "solver_time_seconds": milp_result.get("solve_time", 0.0),
             "solver_status": milp_result.get("status", "unknown"),
             "milp_assignments": milp_result.get("assignments", {}),
+            "evaluation": {
+                "method": "expected_cost_3point_quadrature",
+                "quantile_weights": dict(QUANTILE_WEIGHTS),
+                "quantile_delays_minutes": {
+                    q: cascades[q].get("trigger_delay_minutes")
+                    for q in QUANTILE_WEIGHTS
+                },
+                "expected_baseline_cost": round(expected_baseline, 2),
+                "feasibility_checked_at": "p90 (robust)",
+            },
         }
 
     def _solve_gate_assignment_milp(self, cascade_result: dict, flights: dict,
@@ -220,22 +272,8 @@ class MILPOptimizer:
         return "high"
 
     @staticmethod
-    def _estimate_success_prob(evaluated: dict) -> float:
-        """Success probability decreases with action complexity."""
-        action_type = evaluated["action"].get("type", "")
-        base = 0.92
-        if "gate" in action_type:
-            base -= 0.04
-        if "swap" in action_type:
-            base -= 0.10
-        if "rebook" in action_type:
-            base -= 0.05
-        if action_type == "do_nothing":
-            base = 0.99  # doing nothing always "succeeds" (at full cost)
-        return round(base, 2)
-
-    @staticmethod
-    def _generate_rationale(evaluated: dict, cascade: dict) -> list[str]:
+    def _generate_rationale(evaluated: dict, cascade: dict,
+                            expected_baseline: float) -> list[str]:
         rationale = []
         action = evaluated["action"]
         action_type = str(action.get("type", ""))
@@ -270,11 +308,23 @@ class MILPOptimizer:
                     f"Avoids {avoided:.0f} min of downstream rotation delay"
                 )
         if "rebook" in action_type:
+            leaves = action.get("components", [action])
+            rebook = next((a for a in leaves if a.get("type") == "passenger_rebook"), {})
+            n_pax = rebook.get("passenger_count", cascade.get("missed_connections", 0))
             rationale.append(
-                f"Proactively rebooks {cascade.get('missed_connections', 0)} "
-                f"at-risk connections"
+                f"Proactively rebooks {n_pax} connections at risk in the "
+                f"P90 tail scenario"
             )
-        saving = cascade["baseline_cost"] - evaluated["expected_cost"]
+        saving = expected_baseline - evaluated["expected_cost"]
         if saving > 0:
-            rationale.append(f"Reduces disruption cost by ${saving:,.0f}")
+            rationale.append(
+                f"Reduces expected disruption cost by ${saving:,.0f} "
+                f"(averaged over the P10/P50/P90 delay outcomes)"
+            )
+        costs = evaluated.get("costs", {})
+        if costs and costs.get("p90", 0) > costs.get("p10", 0):
+            rationale.append(
+                f"Holds up across the distribution: ${costs['p10']:,.0f} if the "
+                f"delay is mild (P10) to ${costs['p90']:,.0f} in the tail (P90)"
+            )
         return rationale

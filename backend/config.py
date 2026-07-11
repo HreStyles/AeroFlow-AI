@@ -114,6 +114,12 @@ CASCADE_COST_THRESHOLD = 500.0      # only run the optimizer above this cost
 # delay (downstream pax counts are estimates, not observed).
 DOWNSTREAM_COST_DISCOUNT = 0.5
 
+# Distribution-aware optimization: candidate actions are costed at the P10,
+# P50, and P90 predicted delays and ranked by the weighted expected cost —
+# a 3-point quadrature over the predictive distribution. Weights follow the
+# standard light/middle/tail split for symmetric 3-point rules.
+QUANTILE_WEIGHTS = {"p10": 0.25, "p50": 0.50, "p90": 0.25}
+
 # Confidence normalization: a P90-P10 spread of this many minutes → 0 confidence
 CONFIDENCE_SPREAD_NORM_MINUTES = 180.0
 

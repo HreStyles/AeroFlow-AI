@@ -15,6 +15,7 @@ from config import (
     DEFAULT_COST_WEIGHTS,
     DELAY_PROBABILITY_THRESHOLD,
     MIN_MEANINGFUL_DELAY_MINUTES,
+    QUANTILE_WEIGHTS,
 )
 from component_b.simulation_engine import SimulationEngine
 from component_c.baselines import run_baselines
@@ -120,19 +121,38 @@ def run_scenario(scenario: dict, predictor) -> dict:
             pred_time = _offset_time(flight["scheduled_departure"], -15)
             log.add_event(pred_time, "delay_predicted", fid, prediction)
 
-            # ── Component B: simulate the cascade using the P50 delay ─────────
-            delay_minutes = max(prediction["p50_minutes"], injected_minutes)
-            if delay_minutes > MIN_MEANINGFUL_DELAY_MINUTES:
-                cascade = sim_engine.propagate_delay(fid, delay_minutes, flights_dict)
+            # ── Component B: simulate the cascade at P10, P50, AND P90 ────────
+            # A deterministic injected delay floors every quantile (the delay
+            # cannot be less than what has already been injected).
+            delays = {
+                q: max(prediction[f"{q}_minutes"], injected_minutes)
+                for q in QUANTILE_WEIGHTS
+            }
+            if delays["p50"] > MIN_MEANINGFUL_DELAY_MINUTES:
+                cascades = {
+                    q: sim_engine.propagate_delay(fid, d, flights_dict)
+                    for q, d in delays.items()
+                }
+                cascade = cascades["p50"]  # displayed cascade (median outcome)
+                expected_baseline = sum(
+                    QUANTILE_WEIGHTS[q] * cascades[q]["baseline_cost"]
+                    for q in QUANTILE_WEIGHTS
+                )
 
-                if cascade["baseline_cost"] > CASCADE_COST_THRESHOLD:
+                if expected_baseline > CASCADE_COST_THRESHOLD:
                     cascade_time = _offset_time(flight["scheduled_departure"], -12)
-                    log.add_event(cascade_time, "cascade_detected", fid, cascade)
-                    cascades_for_validation.append(cascade)
+                    log.add_event(cascade_time, "cascade_detected", fid, {
+                        **cascade,
+                        "baseline_cost_p10": cascades["p10"]["baseline_cost"],
+                        "baseline_cost_p90": cascades["p90"]["baseline_cost"],
+                        "expected_baseline_cost": round(expected_baseline, 2),
+                        "quantile_delays_minutes": delays,
+                    })
+                    cascades_for_validation.append(cascades)
 
-                    # ── Component C: optimize the response ────────────────────
+                    # ── Component C: optimize over the delay distribution ─────
                     recommendation = optimizer.optimize(
-                        cascade, flights_dict, airport_config, sim_engine
+                        cascades, flights_dict, airport_config, sim_engine
                     )
                     if recommendation.get("optimality_gap_pct") is not None:
                         gap_samples.append(recommendation["optimality_gap_pct"])
@@ -145,6 +165,7 @@ def run_scenario(scenario: dict, predictor) -> dict:
                         "optimality_gap_pct": recommendation["optimality_gap_pct"],
                         "solver_time_seconds": recommendation["solver_time_seconds"],
                         "solver_status": recommendation.get("solver_status", ""),
+                        "evaluation": recommendation.get("evaluation", {}),
                     })
 
         log.add_event(flight["scheduled_arrival"], "flight_arrival", fid, {
@@ -183,8 +204,8 @@ def _compute_validation(cascades: list[dict], flights_dict: dict,
                         airport_config: dict, sim_engine,
                         cost_weights: dict, gap_samples: list[float]) -> dict:
     """Method 1 (optimality gap), Method 3 (baseline comparison),
-    Method 4 (cost-weight sensitivity) — computed on the scenario's largest
-    cascade, all from real solver/simulation runs."""
+    Method 4 (cost-weight sensitivity) — all from real solver/simulation
+    runs, evaluated as expected cost over the P10/P50/P90 quantile cascades."""
     if not cascades:
         return {
             "optimality_gap_pct": 0.0,
@@ -194,7 +215,13 @@ def _compute_validation(cascades: list[dict], flights_dict: dict,
                             "note": "No cascade exceeded the cost threshold."},
         }
 
-    main_cascade = max(cascades, key=lambda c: c["baseline_cost"])
+    def _expected_baseline(quantile_cascades: dict) -> float:
+        return sum(
+            QUANTILE_WEIGHTS[q] * quantile_cascades[q]["baseline_cost"]
+            for q in QUANTILE_WEIGHTS
+        )
+
+    main_cascade = max(cascades, key=_expected_baseline)
 
     # Method 3: 4-strategy comparison, summed across every detected cascade
     baseline_costs = {"do_nothing": 0.0, "random": 0.0, "greedy": 0.0, "milp": 0.0}

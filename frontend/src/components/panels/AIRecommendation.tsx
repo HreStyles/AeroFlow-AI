@@ -3,7 +3,7 @@
 import type { TimedEvent } from "../../hooks/useSimulation";
 import type { RankedOption } from "../../types/recommendations";
 import CostBreakdown from "../shared/CostBreakdown";
-import { formatMinutes, formatPct } from "../../utils/formatting";
+import { formatCost, formatMinutes, formatPct } from "../../utils/formatting";
 
 interface Props {
   recommendation: TimedEvent | null;
@@ -29,7 +29,12 @@ export default function AIRecommendation({ recommendation, cascade }: Props) {
 
   const top = recommendation.details.ranked_options?.[0] as RankedOption | undefined;
   if (!top) return null;
-  const baseline = cascade?.details.baseline_cost ?? top.expected_cost;
+  // Compare expected cost to expected baseline (both quadrature-weighted)
+  const baseline =
+    recommendation.details.evaluation?.expected_baseline_cost ??
+    cascade?.details.expected_baseline_cost ??
+    cascade?.details.baseline_cost ??
+    top.expected_cost;
 
   return (
     <div className="aero-card h-full flex flex-col border-l-2 border-l-aero-blue overflow-hidden animate-slide-in">
@@ -53,7 +58,7 @@ export default function AIRecommendation({ recommendation, cascade }: Props) {
           <div className="font-mono font-bold text-aero-green">
             {formatPct(top.cost_reduction_pct)}
           </div>
-          <div className="text-[9px] uppercase text-aero-muted">cost cut</div>
+          <div className="text-[9px] uppercase text-aero-muted">expected cost cut</div>
         </div>
         <div className="bg-aero-bg rounded p-1.5">
           <div className="font-mono font-bold text-aero-green">
@@ -61,15 +66,28 @@ export default function AIRecommendation({ recommendation, cascade }: Props) {
           </div>
           <div className="text-[9px] uppercase text-aero-muted">delay impact</div>
         </div>
-        <div className="bg-aero-bg rounded p-1.5">
-          <div className="font-mono font-bold">
-            {Math.round(top.success_probability * 100)}%
+        <div
+          className="bg-aero-bg rounded p-1.5"
+          title="Cost if the delay lands in the tail (P90) of the predicted distribution — feasibility is checked at this worst case"
+        >
+          <div className="font-mono font-bold text-aero-amber">
+            {formatCost(top.expected_cost_p90)}
           </div>
-          <div className="text-[9px] uppercase text-aero-muted">success prob</div>
+          <div className="text-[9px] uppercase text-aero-muted">p90 worst case</div>
         </div>
       </div>
 
       <CostBreakdown baseline={baseline} optionCost={top.expected_cost} />
+      <div
+        className="text-[10px] text-aero-muted font-mono flex justify-between"
+        title="Each action is costed at the P10, P50 and P90 predicted delays; options are ranked by the 0.25/0.50/0.25 weighted expected cost"
+      >
+        <span>E[cost] over delay distribution</span>
+        <span>
+          {formatCost(top.expected_cost_p10)} · {formatCost(top.expected_cost_p50)} ·{" "}
+          {formatCost(top.expected_cost_p90)}
+        </span>
+      </div>
 
       <div>
         <div className="aero-label mb-1">Rationale</div>
