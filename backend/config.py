@@ -32,6 +32,8 @@ MODEL_NOT_TRAINED_MESSAGE = (
 
 # ─── Feature names (exact order used in training AND inference) ──────────────
 FEATURE_NAMES = [
+    # weather (TAF forecast when available, observed METAR otherwise, NaN when
+    # neither — LightGBM routes missing values natively)
     "origin_weather_severity", "dest_weather_severity",
     "origin_congestion_numeric", "dest_congestion_numeric",
     "schedule_slack_minutes", "rotation_position",
@@ -39,7 +41,31 @@ FEATURE_NAMES = [
     "month", "route_avg_delay", "carrier_ontime_pct",
     "aircraft_age_years", "seating_capacity",
     "weather_x_congestion",  # interaction feature
+    # network-state features (derived from already-departed flights only —
+    # the system's live state, the largest signal at operational horizons)
+    "trailing_2h_airport_mean_delay",
+    "trailing_4h_airport_mean_delay",
+    "trailing_2h_delayed_flight_share",
+    "inbound_tail_delay",       # previous leg's arrival delay for this tail
+    # weather metadata (missingness and forecast-vs-observed are signal)
+    "weather_is_forecast",
+    "weather_data_available",
+    # calendar
+    "is_federal_holiday",
+    "days_to_nearest_holiday",
+    # identity (native LightGBM categoricals, codes from saved level lists)
+    "carrier",
+    "origin_airport",
+    "dest_airport",
 ]
+
+# Passed to LightGBM's categorical_feature; encoded as integer codes against
+# the level lists persisted in lookups.json (unseen level → -1 → missing)
+CATEGORICAL_FEATURES = ["carrier", "origin_airport", "dest_airport"]
+
+# TAF decision horizon: use the latest forecast issued at least this long
+# before scheduled departure (an operator deciding 2h out has no later info)
+TAF_HORIZON_HOURS = 2
 
 # ─── Aircraft data tables (published figures) ────────────────────────────────
 # Typical single-class-equivalent seating capacity

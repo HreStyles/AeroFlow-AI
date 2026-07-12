@@ -16,7 +16,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # backend/
 
-from config import CLASSIFIER_PATH, FEATURE_NAMES, PROCESSED_DATA_DIR  # noqa: E402
+from config import (  # noqa: E402
+    CATEGORICAL_FEATURES,
+    CLASSIFIER_PATH,
+    FEATURE_NAMES,
+    PROCESSED_DATA_DIR,
+)
 
 PARAMS = {
     "objective": "binary",
@@ -47,13 +52,17 @@ if _BEST_PARAMS.exists():
     print(f"Using tuned hyperparameters from {_BEST_PARAMS}")
 
 
-def _walk_forward_folds(train_df: pd.DataFrame):
-    """Expanding-window monthly folds: train ≤ month m, validate on m+1."""
+def _walk_forward_folds(train_df: pd.DataFrame, last_n: int = 4):
+    """Expanding-window monthly folds: fit on everything before month m,
+    validate on m. Capped to the LAST `last_n` months of the training
+    window — with multi-year data, 25+ folds would multiply training cost
+    for no extra selection signal; the latest months are the folds closest
+    to the deployment frontier."""
     months = sorted(train_df["FlightDate"].dt.to_period("M").unique())
-    for i in range(1, len(months)):
-        fit_idx = train_df["FlightDate"].dt.to_period("M") <= months[i - 1]
-        val_idx = train_df["FlightDate"].dt.to_period("M") == months[i]
-        yield months[i], train_df[fit_idx], train_df[val_idx]
+    for val_month in months[-last_n:]:
+        fit_idx = train_df["FlightDate"].dt.to_period("M") < val_month
+        val_idx = train_df["FlightDate"].dt.to_period("M") == val_month
+        yield val_month, train_df[fit_idx], train_df[val_idx]
 
 
 def train(train_path: Path | None = None, out_path: Path | None = None) -> lgb.Booster:
@@ -65,7 +74,8 @@ def train(train_path: Path | None = None, out_path: Path | None = None) -> lgb.B
     best_iters, fold_aucs = [], []
     for val_month, fit_df, val_df in _walk_forward_folds(train_df):
         dfit = lgb.Dataset(fit_df[FEATURE_NAMES], label=fit_df["label_delayed"],
-                           feature_name=FEATURE_NAMES)
+                           feature_name=FEATURE_NAMES,
+                           categorical_feature=CATEGORICAL_FEATURES)
         dval = lgb.Dataset(val_df[FEATURE_NAMES], label=val_df["label_delayed"],
                            reference=dfit)
         booster = lgb.train(
@@ -84,7 +94,8 @@ def train(train_path: Path | None = None, out_path: Path | None = None) -> lgb.B
     # ── Final fit on the full training window ───────────────────────────────
     final_rounds = int(np.median(best_iters))
     dtrain = lgb.Dataset(train_df[FEATURE_NAMES], label=train_df["label_delayed"],
-                         feature_name=FEATURE_NAMES)
+                         feature_name=FEATURE_NAMES,
+                         categorical_feature=CATEGORICAL_FEATURES)
     booster = lgb.train(PARAMS, dtrain, num_boost_round=final_rounds)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

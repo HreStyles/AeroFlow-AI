@@ -85,7 +85,8 @@ class DelayPredictor:
     def predict(self, flight: dict, scenario_context: dict) -> dict:
         """Run inference for one flight given the scenario context."""
         context = dict(scenario_context)
-        for key in ("route_averages", "carrier_stats", "aircraft_registry"):
+        for key in ("route_averages", "carrier_stats", "aircraft_registry",
+                    "categorical_levels"):
             context.setdefault(key, self.lookups.get(key, {}))
 
         features = build_feature_vector(flight, context, self.feature_names)

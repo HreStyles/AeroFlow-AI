@@ -1,33 +1,43 @@
 """
-Training data pipeline — five real datasets:
+Training data pipeline — six real data sources:
 
-  1. BTS On-Time Performance  (data/raw/bts_ontime/*.zip, Jan–Jul 2024)
-       → flight records + delay labels for flights touching ATL or JFK
-  2. NOAA/IEM METAR           (data/raw/noaa_metar/K{ATL,JFK}_2024.csv)
-       → hourly 0–1 weather severity, joined at scheduled hour
-  3. FAA Aircraft Registry    (data/raw/faa_registry/ReleasableAircraft.zip)
-       → tail number → aircraft model, year built (age), seat count
-  4. BTS T-100 Segment        (data/raw/bts_t100/*.zip)
-       → route-level average seats and load factor
-  5. BTS DB1B O&D Survey      (data/raw/bts_db1b/*.zip, Q1 2024)
-       → connection rate at ATL / JFK (share of passengers connecting)
-       NOTE: DB1B contains no schedule-time fields, so an average
-       connection *buffer* cannot be derived from it; the buffer remains a
-       documented MCT default in the completeness layer.
+  1. BTS On-Time Performance  (data/raw/bts_ontime/*.zip)
+       years used: 2019, 2023, 2024, 2025.
+       2020–2022 are EXCLUDED even if present: COVID-era operations are a
+       different regime (load factors, schedule banks, and delay dynamics
+       collapsed), and training on them would teach the model a world that
+       no longer exists. Documented regime-break decision.
+  2. NOAA/IEM METAR           (data/raw/noaa_metar/K{ATL,JFK}_{year}.csv)
+       → hourly OBSERVED 0–1 weather severity
+  3. NOAA/IEM TAF             (data/raw/noaa_taf/K{ATL,JFK}_taf_2024.csv)
+       → FORECAST severity from the latest TAF issued ≥2h before departure.
+       Fixes the observed-weather leakage: at a 2-hour decision horizon the
+       system can only know a forecast, not the observation. Where no TAF
+       exists (2019/2023/2025 files not downloaded, or issuance gaps) we
+       fall back to observed METAR with weather_is_forecast=0 — the model
+       learns that forecast-based rows are noisier.
+  4. FAA Aircraft Registry    → tail → model / age / seats
+  5. BTS T-100 Segment        → route-level seats + load factor
+  6. BTS DB1B O&D Survey      → hub connection rates (simulation side)
 
-Temporal causality is enforced: every feature is computable strictly before
-the flight's scheduled departure (schedule structure, weather at the
-scheduled hour, and historical aggregates from the TRAINING window only).
-Actual times / delays / cancellations are used ONLY as labels.
+Network-state features (no download — derived from BTS itself) capture the
+system's live state, the dominant signal at operational horizons (Rebollo &
+Balakrishnan 2014; BTS delay-cause data puts late-arriving aircraft #1):
+  trailing_2h/4h_airport_mean_delay, trailing_2h_delayed_flight_share
+  (rolling, computed ONLY from flights already departed at prediction time;
+  BTS DepDelayMinutes is floored at 0, so with a strict "actual departure
+  time < scheduled departure" window no flight can see its own outcome),
+  and inbound_tail_delay (previous leg's arrival delay for the same tail).
 
-Split is TIME-BASED, never random: train = Jan–May 2024, test = Jun–Jul 2024.
-
-Outputs:
-  data/processed/train.parquet, test.parquet
-  models/saved/lookups.json   (route averages, carrier OTP, aircraft
-                               registry, T-100 route stats, DB1B connection
-                               rates — used at inference time)
+Splits are TIME-BASED, never random:
+  train      = 2019 + 2023 + 2024-01..05
+  test       = 2024-06..07  (the walk-forward frontier)
+  oot_2025   = 2025         (untouched out-of-time year for the
+                             "tested on a different year entirely" claim)
+All fitted constants (route averages, carrier OTP, congestion p95,
+categorical level lists) come from the TRAIN window only.
 """
+import ast
 import glob
 import io
 import json
@@ -36,12 +46,14 @@ import sys
 import zipfile
 from pathlib import Path
 
+import holidays as holidays_lib
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # backend/
 
 from config import (  # noqa: E402
+    CATEGORICAL_FEATURES,
     DEFAULT_CAPACITY,
     DEFAULT_TURNAROUND,
     DELAY_THRESHOLD_MINUTES,
@@ -49,39 +61,57 @@ from config import (  # noqa: E402
     LOOKUPS_PATH,
     PROCESSED_DATA_DIR,
     RAW_DATA_DIR,
+    TAF_HORIZON_HOURS,
     TURNAROUND_MAP,
 )
 
 STUDY_AIRPORTS = ["ATL", "JFK"]
-TRAIN_CUTOFF = "2024-06-01"          # train < cutoff ≤ test (time-based!)
-DATA_START, DATA_END = "2024-01-01", "2024-08-01"
+STUDY_YEARS = {2019, 2023, 2024, 2025}
+COVID_YEARS = {2020, 2021, 2022}      # excluded — regime break (see docstring)
+TEST_YEAR, TEST_MONTHS = 2024, {6, 7}
+OOT_YEAR = 2025
 
 ONTIME_DIR = RAW_DATA_DIR / "bts_ontime"
 T100_DIR = RAW_DATA_DIR / "bts_t100"
 DB1B_DIR = RAW_DATA_DIR / "bts_db1b"
 METAR_DIR = RAW_DATA_DIR / "noaa_metar"
+TAF_DIR = RAW_DATA_DIR / "noaa_taf"
 FAA_DIR = RAW_DATA_DIR / "faa_registry"
 
 ONTIME_COLUMNS = [
     "FlightDate", "Reporting_Airline", "Tail_Number",
     "Flight_Number_Reporting_Airline", "Origin", "Dest",
     "CRSDepTime", "CRSArrTime",
+    "DepDelayMinutes",  # used ONLY (a) as trailing-window state of flights
+                        # that already departed, (b) never for the same row
     "ArrDelayMinutes", "Cancelled", "Diverted",
 ]
-# Post-hoc columns — used ONLY to build labels, never as features.
-LEAKY_COLUMNS = ["DepTime", "DepDelay", "DepDelayMinutes", "ArrTime",
+# Post-hoc columns of the SAME flight — labels only, never same-row features.
+LEAKY_COLUMNS = ["DepTime", "DepDelay", "ArrTime",
                  "ArrDelay", "ArrDelayMinutes", "Cancelled", "Diverted",
-                 "TaxiOut", "TaxiIn", "WheelsOff", "WheelsOn", "ActualElapsedTime"]
+                 "TaxiOut", "TaxiIn", "WheelsOff", "WheelsOn",
+                 "ActualElapsedTime"]
+
+US_HOLIDAYS = holidays_lib.UnitedStates(years=range(2018, 2027))
+HOLIDAY_DATES = pd.DatetimeIndex(sorted(US_HOLIDAYS.keys()))
 
 
-# ─── 1. BTS On-Time Performance ──────────────────────────────────────────────
+# ─── 1. BTS On-Time Performance (multi-year, chunked per zip) ────────────────
 
 def load_ontime() -> pd.DataFrame:
     paths = sorted(glob.glob(str(ONTIME_DIR / "*.zip")))
     if not paths:
         raise FileNotFoundError(f"No BTS On-Time zips in {ONTIME_DIR}")
     frames = []
+    skipped_covid = 0
     for path in paths:
+        m = re.search(r"_(\d{4})_(\d{1,2})\.zip$", Path(path).name)
+        year = int(m.group(1)) if m else 0
+        if year in COVID_YEARS:
+            skipped_covid += 1
+            continue
+        if year not in STUDY_YEARS:
+            continue
         with zipfile.ZipFile(path) as z:  # zips also contain a readme.html
             csv_name = next(n for n in z.namelist() if n.endswith(".csv"))
             with z.open(csv_name) as f:
@@ -90,21 +120,20 @@ def load_ontime() -> pd.DataFrame:
                 )
         df = df[df["Origin"].isin(STUDY_AIRPORTS) | df["Dest"].isin(STUDY_AIRPORTS)]
         frames.append(df)
-        print(f"  {Path(path).name}: kept {len(df):,} ATL/JFK rows")
+    if skipped_covid:
+        print(f"  skipped {skipped_covid} COVID-era (2020–22) files by design")
     ontime = pd.concat(frames, ignore_index=True)
     ontime["FlightDate"] = pd.to_datetime(ontime["FlightDate"])
-    ontime = ontime[
-        (ontime["FlightDate"] >= DATA_START) & (ontime["FlightDate"] < DATA_END)
-    ]
-    print(f"  total: {len(ontime):,} flights touching ATL/JFK, "
-          f"{ontime['FlightDate'].min().date()} → {ontime['FlightDate'].max().date()}")
+    ontime = ontime[ontime["FlightDate"].dt.year.isin(STUDY_YEARS)]
+    by_year = ontime["FlightDate"].dt.year.value_counts().sort_index()
+    print(f"  {len(ontime):,} ATL/JFK flights: "
+          + ", ".join(f"{y}={n:,}" for y, n in by_year.items()))
     return ontime
 
 
-# ─── 2. NOAA / IEM METAR → hourly weather severity ──────────────────────────
+# ─── 2. METAR (observed) ─────────────────────────────────────────────────────
 
 def _metar_severity(row) -> float:
-    """Map METAR variables to the 0–1 severity index used across the system."""
     severity = 0.0
     vsby = row.get("vsby")
     if pd.notna(vsby):
@@ -146,22 +175,16 @@ def load_metar() -> pd.DataFrame:
         raise FileNotFoundError(f"No METAR CSVs in {METAR_DIR}")
     frames = []
     for path in paths:
-        df = pd.read_csv(path, na_values=["M"], low_memory=False)
-        frames.append(df)
-        print(f"  {Path(path).name}: {len(df):,} observations")
+        frames.append(pd.read_csv(path, na_values=["M"], low_memory=False))
     metar = pd.concat(frames, ignore_index=True)
 
     metar["valid"] = pd.to_datetime(metar["valid"], errors="coerce")
     metar = metar.dropna(subset=["valid"])
-    metar = metar[(metar["valid"] >= DATA_START) & (metar["valid"] < DATA_END)]
-    # IEM uses 'T' for trace precipitation
+    metar = metar[metar["valid"].dt.year.isin(STUDY_YEARS)]
     metar["p01i"] = pd.to_numeric(metar["p01i"].replace("T", 0.005), errors="coerce")
     for col in ("vsby", "sknt", "gust", "skyl1"):
         metar[col] = pd.to_numeric(metar[col], errors="coerce")
-    # station 'ATL'/'JFK' already IATA-like in IEM exports
     metar["airport"] = metar["station"].str.replace("^K", "", regex=True)
-
-    # Forward-fill slowly-changing variables within station (short sensor gaps)
     metar = metar.sort_values(["airport", "valid"])
     for col in ("vsby", "sknt", "skyl1"):
         metar[col] = metar.groupby("airport")[col].ffill(limit=6)
@@ -171,16 +194,148 @@ def load_metar() -> pd.DataFrame:
     hourly = (
         metar.groupby(["airport", "hour"])["weather_severity"].max().reset_index()
     )
-    cov = hourly.groupby("airport")["hour"].agg(["min", "max", "count"])
-    print(f"  hourly severity table:\n{cov}")
+    cov = hourly.groupby("airport")["hour"].agg(
+        lambda s: f"{s.min():%Y-%m} → {s.max():%Y-%m} ({len(s):,}h)"
+    )
+    for ap, desc in cov.items():
+        print(f"  METAR {ap}: {desc}")
     return hourly
 
 
-# ─── 3. FAA Aircraft Registry ────────────────────────────────────────────────
+# ─── 3. TAF (forecast) ───────────────────────────────────────────────────────
+
+def _parse_list(s) -> list:
+    try:
+        v = ast.literal_eval(s) if isinstance(s, str) else []
+        return v if isinstance(v, list) else []
+    except (ValueError, SyntaxError):
+        return []
+
+
+def _taf_severity(row) -> float:
+    """Same 0–1 severity formula as METAR, on TAF forecast fields."""
+    severity = 0.0
+    vsby = row.get("visibility")
+    if pd.notna(vsby):
+        if vsby < 1:
+            severity = max(severity, 0.9)
+        elif vsby < 3:
+            severity = max(severity, 0.6)
+        elif vsby < 5:
+            severity = max(severity, 0.35)
+    wind = max(v for v in (row.get("sknt"), row.get("gust"), 0.0) if pd.notna(v))
+    if wind > 35:
+        severity = max(severity, 0.85)
+    elif wind > 25:
+        severity = max(severity, 0.6)
+    elif wind > 15:
+        severity = max(severity, 0.3)
+    # Lowest broken/overcast layer = forecast ceiling
+    ceiling = None
+    for cover, level in zip(row["skyc_list"], row["skyl_list"]):
+        if cover in ("BKN", "OVC", "VV") and level is not None:
+            ceiling = level if ceiling is None else min(ceiling, level)
+    if ceiling is not None:
+        if ceiling < 500:
+            severity = max(severity, 0.7)
+        elif ceiling < 1000:
+            severity = max(severity, 0.5)
+    wx = " ".join(str(w) for w in row["wx_list"])
+    if any(code in wx for code in ("TS", "GR", "FC", "+RA")):
+        severity = max(severity, 0.85)
+    elif any(code in wx for code in ("SN", "PL", "FZ", "IC")):
+        severity = max(severity, 0.7)
+    return round(severity, 2)
+
+
+def load_taf() -> pd.DataFrame:
+    """Return TAF forecast periods: airport, issue_ts, fx_start, fx_end,
+    is_tempo, severity. fx_end for FM/base groups = next group's start
+    within the same issuance (TAF semantics)."""
+    paths = sorted(glob.glob(str(TAF_DIR / "*.csv")))
+    if not paths:
+        print("  no TAF files — all rows will use observed METAR fallback")
+        return pd.DataFrame(
+            columns=["airport", "issue_ts", "fx_start", "fx_end",
+                     "is_tempo", "severity"]
+        )
+    frames = []
+    for path in paths:
+        frames.append(pd.read_csv(path, low_memory=False))
+    taf = pd.concat(frames, ignore_index=True)
+
+    taf["issue_ts"] = pd.to_datetime(taf["valid"], errors="coerce")
+    taf["fx_start"] = pd.to_datetime(taf["fx_valid"], errors="coerce")
+    taf["fx_end_raw"] = pd.to_datetime(taf["fx_valid_end"], errors="coerce")
+    taf = taf.dropna(subset=["issue_ts", "fx_start"])
+    taf["airport"] = taf["station"].str.replace("^K", "", regex=True)
+    taf["is_tempo"] = taf["is_tempo"].astype(str).str.lower() == "true"
+    for col in ("sknt", "gust", "visibility"):
+        taf[col] = pd.to_numeric(taf[col], errors="coerce")
+    taf["skyc_list"] = taf["skyc"].map(_parse_list)
+    taf["skyl_list"] = taf["skyl"].map(_parse_list)
+    taf["wx_list"] = taf["presentwx"].map(_parse_list)
+    taf["severity"] = taf.apply(_taf_severity, axis=1)
+
+    # FM/base groups run until the next base group of the same issuance;
+    # the last group runs to issuance + 30h (max TAF validity)
+    taf = taf.sort_values(["airport", "issue_ts", "fx_start"])
+    base = taf[~taf["is_tempo"]].copy()
+    base["fx_end"] = (
+        base.groupby(["airport", "issue_ts"])["fx_start"].shift(-1)
+    )
+    base["fx_end"] = base["fx_end"].fillna(base["issue_ts"] + pd.Timedelta(hours=30))
+    tempo = taf[taf["is_tempo"]].copy()
+    tempo["fx_end"] = tempo["fx_end_raw"].fillna(
+        tempo["fx_start"] + pd.Timedelta(hours=1)
+    )
+    periods = pd.concat([base, tempo], ignore_index=True)[
+        ["airport", "issue_ts", "fx_start", "fx_end", "is_tempo", "severity"]
+    ]
+    n_issuances = periods.groupby("airport")["issue_ts"].nunique()
+    print("  TAF issuances: "
+          + ", ".join(f"{a}={n:,}" for a, n in n_issuances.items()))
+    return periods
+
+
+def join_taf_severity(flights: pd.DataFrame, taf_periods: pd.DataFrame,
+                      airport_col: str, ts_col: str) -> pd.Series:
+    """Forecast severity for each flight from the latest TAF issued
+    ≥ TAF_HORIZON_HOURS before the flight's timestamp; NaN when no such
+    TAF covers the timestamp. TEMPO groups raise severity to their max
+    (a forecast of possible worse conditions is planning-relevant)."""
+    result = pd.Series(np.nan, index=flights.index)
+    if taf_periods.empty:
+        return result
+    horizon = pd.Timedelta(hours=TAF_HORIZON_HOURS)
+    for airport, fl in flights.groupby(airport_col):
+        periods = taf_periods[taf_periods["airport"] == airport]
+        if periods.empty:
+            continue
+        issuances = np.sort(periods["issue_ts"].unique())
+        t = fl[ts_col]
+        # latest issuance at or before (t − horizon)
+        idx = np.searchsorted(issuances, (t - horizon).to_numpy(), side="right") - 1
+        valid = idx >= 0
+        chosen = pd.Series(pd.NaT, index=fl.index)
+        chosen[valid] = issuances[idx[valid]]
+        tmp = fl.assign(_issue=chosen, _t=t)
+        merged = tmp.reset_index().merge(
+            periods, left_on="_issue", right_on="issue_ts", how="inner"
+        )
+        covering = merged[
+            (merged["fx_start"] <= merged["_t"]) & (merged["_t"] < merged["fx_end"])
+        ]
+        if covering.empty:
+            continue
+        sev = covering.groupby("index")["severity"].max()
+        result.loc[sev.index] = sev.values
+    return result
+
+
+# ─── 4. FAA Aircraft Registry ────────────────────────────────────────────────
 
 def _normalize_model(mfr: str, model: str) -> str | None:
-    """Map an FAA registry model string onto the system's aircraft-type
-    vocabulary (used for turnaround-time lookups)."""
     m = model.upper().replace(" ", "")
     for pattern, target in [
         (r"737-?8", "B737-800"), (r"737-?9", "B737-900"),
@@ -227,21 +382,20 @@ def load_faa_registry() -> dict[str, dict]:
     registry: dict[str, dict] = {}
     for row in joined.itertuples(index=False):
         entry: dict = {}
-        if pd.notna(row.year_built) and 1950 < row.year_built <= 2024:
-            entry["age_years"] = round(2024 - float(row.year_built), 1)
-        if pd.notna(row.seats) and row.seats >= 50:  # airliners only
+        if pd.notna(row.year_built) and 1950 < row.year_built <= 2025:
+            entry["year_built"] = int(row.year_built)
+        if pd.notna(row.seats) and row.seats >= 50:
             entry["seats"] = int(row.seats)
         model = _normalize_model(str(row.MFR or ""), str(row.MODEL or ""))
         if model:
             entry["model"] = model
         if entry:
             registry[row.tail] = entry
-    print(f"  registry: {len(registry):,} tails with age/seats/model "
-          f"(from {len(joined):,} records)")
+    print(f"  registry: {len(registry):,} tails")
     return registry
 
 
-# ─── 4. BTS T-100 Segment ────────────────────────────────────────────────────
+# ─── 5–6. T-100 + DB1B (unchanged logic) ─────────────────────────────────────
 
 def load_t100() -> dict[str, dict]:
     zpath = next(iter(glob.glob(str(T100_DIR / "*.zip"))), None)
@@ -251,15 +405,12 @@ def load_t100() -> dict[str, dict]:
                "YEAR", "MONTH", "CLASS"]
     t100 = pd.read_csv(zpath, usecols=usecols, low_memory=False)
     t100 = t100[
-        (t100["YEAR"] == 2024)
-        & (t100["CLASS"] == "F")            # scheduled passenger service
-        & (t100["SEATS"] > 0)
+        (t100["CLASS"] == "F") & (t100["SEATS"] > 0)
         & (t100["DEPARTURES_PERFORMED"] > 0)
         & (t100["ORIGIN"].isin(STUDY_AIRPORTS) | t100["DEST"].isin(STUDY_AIRPORTS))
     ]
     grouped = t100.groupby(["ORIGIN", "DEST"]).agg(
-        seats=("SEATS", "sum"),
-        pax=("PASSENGERS", "sum"),
+        seats=("SEATS", "sum"), pax=("PASSENGERS", "sum"),
         deps=("DEPARTURES_PERFORMED", "sum"),
     )
     route_stats = {
@@ -269,73 +420,48 @@ def load_t100() -> dict[str, dict]:
         }
         for (o, d), r in grouped.iterrows()
     }
-    print(f"  T-100: {len(route_stats):,} ATL/JFK routes "
-          f"(overall load factor "
-          f"{t100['PASSENGERS'].sum() / t100['SEATS'].sum():.3f})")
+    print(f"  T-100: {len(route_stats):,} routes")
     return route_stats
 
 
-# ─── 5. BTS DB1B O&D Survey ──────────────────────────────────────────────────
-
 def load_db1b() -> dict[str, dict]:
-    """Connection rate at each study airport from DB1B itinerary records.
-
-    Record layout (pipe-delimited, variable length): 10 header fields
-    [rec_id, carrier, yearquarter, n_coupons, passengers, origin,
-     break, market_id, 0, wac] then 11 fields per coupon, whose 7th field is
-    the coupon destination and 8th the trip-break indicator — a BLANK break
-    means the passenger CONNECTED at that airport; 'X' means the trip ended.
-    """
     zpath = next(iter(glob.glob(str(DB1B_DIR / "*.zip"))), None)
     if not zpath:
         raise FileNotFoundError(f"No DB1B zip in {DB1B_DIR}")
-
     stats = {ap: {"connecting": 0.0, "origin": 0.0, "terminating": 0.0}
              for ap in STUDY_AIRPORTS}
-    n_rows = n_bad = 0
     with zipfile.ZipFile(zpath) as z:
-        name = z.namelist()[0]
-        with z.open(name) as f:
+        with z.open(z.namelist()[0]) as f:
             for raw in f:
-                n_rows += 1
                 parts = raw.decode("ascii", "replace").rstrip("\n").split("|")
                 if len(parts) < 21 or (len(parts) - 10) % 11 != 0:
-                    n_bad += 1
                     continue
                 try:
                     n_coupons = int(parts[3])
                     pax = float(parts[4])
                 except ValueError:
-                    n_bad += 1
                     continue
-                origin = parts[5]
-                if origin in stats:
-                    stats[origin]["origin"] += pax
+                if parts[5] in stats:
+                    stats[parts[5]]["origin"] += pax
                 for k in range(n_coupons):
                     base = 10 + 11 * k
                     if base + 7 >= len(parts):
                         break
                     dest = parts[base + 6]
-                    trip_break = parts[base + 7].strip()
                     if dest in stats:
-                        if trip_break == "" and k < n_coupons - 1:
+                        if parts[base + 7].strip() == "" and k < n_coupons - 1:
                             stats[dest]["connecting"] += pax
                         else:
                             stats[dest]["terminating"] += pax
-
     result = {}
     for ap, s in stats.items():
         local = s["origin"] + s["terminating"]
         total = local + s["connecting"]
         result[ap] = {
             "connection_rate": round(s["connecting"] / total, 3) if total else 0.30,
-            "connecting_pax_sample": int(s["connecting"]),
-            "local_pax_sample": int(local),
             "source": "DB1B 2024Q1 (10% ticket sample)",
         }
-        print(f"  DB1B {ap}: connection rate {result[ap]['connection_rate']:.1%} "
-              f"({int(s['connecting']):,} connecting vs {int(local):,} local)")
-    print(f"  DB1B parsed {n_rows:,} itinerary records ({n_bad:,} skipped)")
+        print(f"  DB1B {ap}: connection rate {result[ap]['connection_rate']:.1%}")
     return result
 
 
@@ -346,50 +472,132 @@ def _hhmm_to_minutes(series: pd.Series) -> pd.Series:
     return ((v // 100) % 24) * 60 + (v % 100)
 
 
+def add_network_state(df: pd.DataFrame) -> pd.DataFrame:
+    """Trailing-window airport state + inbound tail delay.
+
+    STRICT CAUSALITY: a flight's window contains only flights whose ACTUAL
+    departure (scheduled + DepDelayMinutes) is strictly before this flight's
+    scheduled departure. DepDelayMinutes ≥ 0 in BTS, so actual ≥ scheduled
+    for every flight, and with a strict '<' comparison a row can never see
+    its own outcome. Cancelled flights never depart and are excluded.
+    """
+    df = df.sort_values(["Origin", "sched_dep_ts"]).reset_index(drop=True)
+    n = len(df)
+    mean2 = np.full(n, np.nan)
+    mean4 = np.full(n, np.nan)
+    share2 = np.full(n, np.nan)
+
+    two_h = np.timedelta64(2, "h")
+    four_h = np.timedelta64(4, "h")
+
+    for _, grp_idx in df.groupby("Origin").indices.items():
+        g = df.iloc[grp_idx]
+        dep_delay = g["DepDelayMinutes"].to_numpy()
+        departed = ~np.isnan(dep_delay)  # cancelled rows have NaN dep delay
+        ev_ts = (g["sched_dep_ts"].to_numpy()
+                 + dep_delay.astype("timedelta64[m]", copy=False)
+                 if False else
+                 g["sched_dep_ts"].to_numpy()[departed]
+                 + np.array(dep_delay[departed], dtype="timedelta64[m]"))
+        ev_delay = dep_delay[departed]
+        order = np.argsort(ev_ts, kind="stable")
+        ev_ts = ev_ts[order]
+        ev_delay = ev_delay[order]
+        cum_sum = np.concatenate([[0.0], np.cumsum(ev_delay)])
+        cum_late = np.concatenate(
+            [[0.0], np.cumsum((ev_delay > DELAY_THRESHOLD_MINUTES).astype(float))]
+        )
+
+        t = g["sched_dep_ts"].to_numpy()
+        hi = np.searchsorted(ev_ts, t, side="left")     # strictly before t
+        lo2 = np.searchsorted(ev_ts, t - two_h, side="left")
+        lo4 = np.searchsorted(ev_ts, t - four_h, side="left")
+
+        cnt2 = hi - lo2
+        cnt4 = hi - lo4
+        with np.errstate(invalid="ignore", divide="ignore"):
+            m2 = np.where(cnt2 > 0, (cum_sum[hi] - cum_sum[lo2]) / cnt2, np.nan)
+            m4 = np.where(cnt4 > 0, (cum_sum[hi] - cum_sum[lo4]) / cnt4, np.nan)
+            s2 = np.where(cnt2 > 0, (cum_late[hi] - cum_late[lo2]) / cnt2, np.nan)
+        mean2[grp_idx] = m2
+        mean4[grp_idx] = m4
+        share2[grp_idx] = s2
+
+    df["trailing_2h_airport_mean_delay"] = np.round(mean2, 2)
+    df["trailing_4h_airport_mean_delay"] = np.round(mean4, 2)
+    df["trailing_2h_delayed_flight_share"] = np.round(share2, 3)
+
+    # Inbound tail delay: previous leg's ArrDelayMinutes for this tail today.
+    # 0 for the first leg of the day (per spec). Note: for extremely late
+    # inbounds the final ArrDelay may only be fully known slightly after this
+    # leg's scheduled departure — a standard, disclosed approximation.
+    df = df.sort_values(["Tail_Number", "FlightDate", "dep_minute_of_day"])
+    df["inbound_tail_delay"] = (
+        df.groupby(["Tail_Number", "FlightDate"])["ArrDelayMinutes"]
+        .shift(1)
+        .fillna(0.0)
+    )
+    return df
+
+
 def build_features(ontime: pd.DataFrame, weather_hourly: pd.DataFrame,
-                   registry: dict, route_stats: dict) -> pd.DataFrame:
+                   taf_periods: pd.DataFrame, registry: dict,
+                   route_stats: dict) -> pd.DataFrame:
     df = ontime.copy()
     df = df[(df["Cancelled"] != 1) & (df["Diverted"] != 1)]
     df = df.dropna(subset=["ArrDelayMinutes", "Tail_Number"])
 
-    # Labels (post-hoc — never features)
+    # Labels (post-hoc — never same-row features)
     df["label_delayed"] = (df["ArrDelayMinutes"] > DELAY_THRESHOLD_MINUTES).astype(int)
     df["label_delay_minutes"] = df["ArrDelayMinutes"].clip(lower=0)
 
-    # Schedule-time features
     dep_min = _hhmm_to_minutes(df["CRSDepTime"])
     arr_min = _hhmm_to_minutes(df["CRSArrTime"])
     df["dep_minute_of_day"] = dep_min
     df["hour_of_day"] = dep_min / 60.0
     df["day_of_week"] = df["FlightDate"].dt.weekday.astype(float)
     df["month"] = df["FlightDate"].dt.month.astype(float)
+    df["sched_dep_ts"] = df["FlightDate"] + pd.to_timedelta(dep_min, unit="m")
+    df["dep_hour_ts"] = df["FlightDate"] + pd.to_timedelta(dep_min // 60, unit="h")
+    df["arr_hour_ts"] = df["FlightDate"] + pd.to_timedelta(arr_min // 60, unit="h")
+    df["sched_arr_ts"] = df["FlightDate"] + pd.to_timedelta(arr_min, unit="m")
 
-    # Aircraft rotations reconstructed from tail sequences per day
+    # Calendar features
+    df["is_federal_holiday"] = df["FlightDate"].isin(HOLIDAY_DATES).astype(float)
+    hol_ns = HOLIDAY_DATES.to_numpy()
+    dates_ns = df["FlightDate"].to_numpy()
+    pos = np.searchsorted(hol_ns, dates_ns)
+    prev_gap = (dates_ns - hol_ns[np.clip(pos - 1, 0, len(hol_ns) - 1)])
+    next_gap = (hol_ns[np.clip(pos, 0, len(hol_ns) - 1)] - dates_ns)
+    days_prev = prev_gap.astype("timedelta64[D]").astype(float)
+    days_next = next_gap.astype("timedelta64[D]").astype(float)
+    df["days_to_nearest_holiday"] = np.minimum(
+        np.abs(days_prev), np.abs(days_next)
+    ).clip(0, 60)
+
+    # Rotation features
     df = df.sort_values(["Tail_Number", "FlightDate", "dep_minute_of_day"])
     grp = df.groupby(["Tail_Number", "FlightDate"], sort=False)
     df["rotation_position"] = grp.cumcount() + 1.0
     df["downstream_legs_today"] = (
         grp["Tail_Number"].transform("size") - df["rotation_position"]
     )
-    # Schedule slack: gap since previous leg's scheduled arrival minus minimum
-    # turnaround (per aircraft model when the registry knows it)
     prev_arr = grp["CRSArrTime"].shift(1)
     prev_arr_min = _hhmm_to_minutes(prev_arr)
     gap = df["dep_minute_of_day"] - prev_arr_min
-    gap[prev_arr.isna() | (gap < 0) | (gap > 720)] = np.nan  # first leg / overnight
-
-    tail_model = df["Tail_Number"].map(
-        lambda t: registry.get(t, {}).get("model")
-    )
+    gap[prev_arr.isna() | (gap < 0) | (gap > 720)] = np.nan
+    tail_model = df["Tail_Number"].map(lambda t: registry.get(t, {}).get("model"))
     min_turn = tail_model.map(
         lambda m: TURNAROUND_MAP.get(m, DEFAULT_TURNAROUND)
     ).astype(float)
     df["schedule_slack_minutes"] = (gap - min_turn).fillna(30.0)
 
-    # Registry features: aircraft age + seating capacity per tail
-    df["aircraft_age_years"] = df["Tail_Number"].map(
-        lambda t: registry.get(t, {}).get("age_years", np.nan)
+    # Registry features (age computed against the flight's own year — a 2019
+    # flight must not see the aircraft's 2024 age)
+    year_built = df["Tail_Number"].map(
+        lambda t: registry.get(t, {}).get("year_built", np.nan)
     )
+    df["aircraft_age_years"] = (df["FlightDate"].dt.year - year_built).clip(0, 60)
     df["aircraft_age_years"] = df["aircraft_age_years"].fillna(
         df["aircraft_age_years"].median()
     )
@@ -401,31 +609,41 @@ def build_features(ontime: pd.DataFrame, weather_hourly: pd.DataFrame,
         tail_seats.fillna(route_seats).fillna(DEFAULT_CAPACITY).astype(float)
     )
 
-    # Weather at the scheduled local hour (both ATL and JFK are US/Eastern,
-    # matching the IEM export timezone)
-    df["dep_hour_ts"] = df["FlightDate"] + pd.to_timedelta(dep_min // 60, unit="h")
-    df["arr_hour_ts"] = df["FlightDate"] + pd.to_timedelta(arr_min // 60, unit="h")
+    # ── Network-state features (strictly causal rolling windows) ─────────────
+    df = add_network_state(df)
+
+    # ── Weather: TAF forecast first, observed METAR fallback, NaN otherwise ──
     wx = weather_hourly.rename(columns={"hour": "ts"})
     df = df.merge(
         wx.rename(columns={"airport": "Origin", "ts": "dep_hour_ts",
-                           "weather_severity": "origin_weather_severity"}),
+                           "weather_severity": "origin_metar_severity"}),
         on=["Origin", "dep_hour_ts"], how="left",
     )
     df = df.merge(
         wx.rename(columns={"airport": "Dest", "ts": "arr_hour_ts",
-                           "weather_severity": "dest_weather_severity"}),
+                           "weather_severity": "dest_metar_severity"}),
         on=["Dest", "arr_hour_ts"], how="left",
     )
-    # Weather is only observed at ATL/JFK; the other endpoint of each flight
-    # gets a benign climatological default (documented assumption).
-    df["origin_weather_severity"] = df["origin_weather_severity"].fillna(0.15)
-    df["dest_weather_severity"] = df["dest_weather_severity"].fillna(0.15)
+    print("  joining TAF forecasts (≥2h horizon)…")
+    origin_taf = join_taf_severity(df, taf_periods, "Origin", "sched_dep_ts")
+    dest_taf = join_taf_severity(df, taf_periods, "Dest", "sched_arr_ts")
 
-    # Congestion proxy inputs: scheduled ops in the same hour at the airport.
-    # The raw counts are pure schedule data (known in advance → causal). The
-    # p95 NORMALIZER, however, is a fitted constant and therefore must be
-    # computed on the training window only — that happens in
-    # split_and_aggregate, alongside route averages, to avoid split leakage.
+    df["origin_weather_severity"] = origin_taf.fillna(df["origin_metar_severity"])
+    df["dest_weather_severity"] = dest_taf.fillna(df["dest_metar_severity"])
+    # NO imputation for airports without weather data: NaN routes natively in
+    # LightGBM, and availability itself is a feature.
+    df["weather_is_forecast"] = (
+        origin_taf.notna() | dest_taf.notna()
+    ).astype(float)
+    df["weather_data_available"] = (
+        df["origin_weather_severity"].notna() | df["dest_weather_severity"].notna()
+    ).astype(float)
+    n_taf = int(df["weather_is_forecast"].sum())
+    print(f"  weather source: TAF forecast {n_taf:,} rows, "
+          f"observed METAR {int((df['weather_data_available'] == 1).sum()) - n_taf:,}, "
+          f"missing {int((df['weather_data_available'] == 0).sum()):,}")
+
+    # Congestion count inputs (normalizers fitted train-only in split step)
     dep_counts = df.groupby(["Origin", "dep_hour_ts"]).size().rename("dep_count")
     df = df.merge(dep_counts, on=["Origin", "dep_hour_ts"], how="left")
     arr_counts = df.groupby(["Dest", "arr_hour_ts"]).size().rename("arr_count")
@@ -433,14 +651,22 @@ def build_features(ontime: pd.DataFrame, weather_hourly: pd.DataFrame,
     return df
 
 
-def split_and_aggregate(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """Time-based split (train Jan–May, test Jun–Jul) + historical aggregates
-    computed on the TRAINING window only, applied to both splits."""
-    cutoff = pd.Timestamp(TRAIN_CUTOFF)
-    train = df[df["FlightDate"] < cutoff].copy()
-    test = df[df["FlightDate"] >= cutoff].copy()
-    print(f"  time-based split at {TRAIN_CUTOFF}: "
-          f"train={len(train):,} (Jan–May), test={len(test):,} (Jun–Jul)")
+def split_and_aggregate(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame,
+                                                   pd.DataFrame, dict]:
+    """Time-based three-way split + TRAIN-ONLY fitted constants."""
+    year = df["FlightDate"].dt.year
+    month = df["FlightDate"].dt.month
+    train_mask = year.isin({2019, 2023}) | (
+        (year == TEST_YEAR) & (~month.isin(TEST_MONTHS))
+    )
+    test_mask = (year == TEST_YEAR) & month.isin(TEST_MONTHS)
+    oot_mask = year == OOT_YEAR
+
+    train = df[train_mask].copy()
+    test = df[test_mask].copy()
+    oot = df[oot_mask].copy()
+    print(f"  split: train={len(train):,} (2019+2023+2024-01..05), "
+          f"test={len(test):,} (2024-06..07), oot_2025={len(oot):,}")
 
     route_avg = (
         train.groupby(["Origin", "Dest"])["label_delay_minutes"].mean().round(2)
@@ -451,9 +677,6 @@ def split_and_aggregate(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, d
     route_map = {f"{o}_{d}": float(v) for (o, d), v in route_avg.items()}
     carrier_map = {c: {"ontime_pct": float(v)} for c, v in carrier_otp.items()}
 
-    # Congestion p95 normalizers — TRAIN ONLY (fitted constants must never see
-    # the test window; same rule as route averages). Unseen airports fall back
-    # to the train-wide global p95.
     dep_p95 = train.groupby("Origin")["dep_count"].quantile(0.95).clip(lower=1)
     arr_p95 = train.groupby("Dest")["arr_count"].quantile(0.95).clip(lower=1)
     dep_global = max(float(train["dep_count"].quantile(0.95)), 1.0)
@@ -461,7 +684,20 @@ def split_and_aggregate(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, d
     dep_p95_map = {k: float(v) for k, v in dep_p95.items()}
     arr_p95_map = {k: float(v) for k, v in arr_p95.items()}
 
-    for frame in (train, test):
+    # Categorical level lists — fitted on TRAIN; unseen levels code to -1,
+    # which LightGBM treats as missing for categorical features.
+    levels = {
+        "carrier": sorted(train["Reporting_Airline"].dropna().unique().tolist()),
+        "origin_airport": sorted(train["Origin"].dropna().unique().tolist()),
+        "dest_airport": sorted(train["Dest"].dropna().unique().tolist()),
+    }
+    code_maps = {k: {v: i for i, v in enumerate(vs)} for k, vs in levels.items()}
+    source_col = {"carrier": "Reporting_Airline",
+                  "origin_airport": "Origin", "dest_airport": "Dest"}
+
+    for frame in (train, test, oot):
+        if frame.empty:
+            continue
         frame["route_avg_delay"] = (
             (frame["Origin"] + "_" + frame["Dest"]).map(route_map).fillna(15.0)
         )
@@ -477,8 +713,12 @@ def split_and_aggregate(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, d
         frame["weather_x_congestion"] = (
             frame["origin_weather_severity"] * frame["origin_congestion_numeric"]
         )
+        for feat in CATEGORICAL_FEATURES:
+            frame[feat] = (
+                frame[source_col[feat]].map(code_maps[feat]).fillna(-1).astype(int)
+            )
 
-    return train, test, {
+    lookups = {
         "route_averages": route_map,
         "carrier_stats": carrier_map,
         "congestion_p95": {
@@ -486,31 +726,31 @@ def split_and_aggregate(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, d
             "arrivals_per_hour": arr_p95_map,
             "global_departures": dep_global,
             "global_arrivals": arr_global,
-            "note": "train-window-only 95th-percentile hourly ops; divide "
-                    "scheduled ops/hr by these to reproduce the congestion "
-                    "features at inference time",
         },
+        "categorical_levels": levels,
     }
+    return train, test, oot, lookups
 
 
 # ─── Orchestration ───────────────────────────────────────────────────────────
 
 def run() -> dict:
-    print("[1/6] BTS On-Time Performance…")
+    print("[1/7] BTS On-Time Performance (2019, 2023, 2024, 2025; COVID skipped)…")
     ontime = load_ontime()
-    print("[2/6] NOAA/IEM METAR…")
+    print("[2/7] NOAA/IEM METAR (observed)…")
     weather = load_metar()
-    print("[3/6] FAA aircraft registry…")
+    print("[3/7] NOAA/IEM TAF (forecast)…")
+    taf_periods = load_taf()
+    print("[4/7] FAA aircraft registry…")
     registry = load_faa_registry()
-    print("[4/6] BTS T-100 segment…")
+    print("[5/7] BTS T-100 segment…")
     route_stats = load_t100()
-    print("[5/6] BTS DB1B O&D survey…")
+    print("[6/7] BTS DB1B O&D survey…")
     connection_rates = load_db1b()
-    print("[6/6] Feature engineering + time-based split…")
-    df = build_features(ontime, weather, registry, route_stats)
-    train, test, aggregates = split_and_aggregate(df)
+    print("[7/7] Feature engineering + three-way time split…")
+    df = build_features(ontime, weather, taf_periods, registry, route_stats)
+    train, test, oot, aggregates = split_and_aggregate(df)
 
-    # Leakage audit: no post-hoc column may appear in the feature list
     for col in LEAKY_COLUMNS:
         assert col not in FEATURE_NAMES, f"Label leakage: {col} in features!"
     missing = [f for f in FEATURE_NAMES if f not in train.columns]
@@ -518,32 +758,38 @@ def run() -> dict:
 
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
     keep = FEATURE_NAMES + ["label_delayed", "label_delay_minutes", "FlightDate"]
-    train_path = PROCESSED_DATA_DIR / "train.parquet"
-    test_path = PROCESSED_DATA_DIR / "test.parquet"
-    train[keep].to_parquet(train_path, index=False)
-    test[keep].to_parquet(test_path, index=False)
+    outputs = {}
+    for name, frame in [("train", train), ("test", test), ("oot_2025", oot)]:
+        path = PROCESSED_DATA_DIR / f"{name}.parquet"
+        if frame.empty:
+            print(f"  {name}: EMPTY — skipped (check raw data folder)")
+            continue
+        frame[keep].to_parquet(path, index=False)
+        outputs[name] = path
 
-    # Inference-time lookups: only tails seen in the study data (keeps the
-    # file small), plus route stats and DB1B connection rates.
     study_tails = set(df["Tail_Number"].unique())
     lookups = {
         **aggregates,
         "aircraft_registry": {
-            t: registry[t] for t in study_tails if t in registry
+            t: {k: v for k, v in registry[t].items()}
+            for t in study_tails if t in registry
         },
         "route_stats_t100": route_stats,
         "connection_rates_db1b": connection_rates,
     }
+    # age_years for inference-time lookups (age as of the current era)
+    for entry in lookups["aircraft_registry"].values():
+        if "year_built" in entry:
+            entry["age_years"] = round(2024 - entry["year_built"], 1)
     LOOKUPS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOOKUPS_PATH, "w") as fp:
         json.dump(lookups, fp)
 
-    print(f"  wrote {train_path} ({len(train):,}), {test_path} ({len(test):,}),")
-    print(f"        {LOOKUPS_PATH} ({len(lookups['aircraft_registry']):,} tails, "
-          f"{len(lookups['route_averages']):,} routes)")
-    print(f"  delayed>15min base rate: train {train['label_delayed'].mean():.3f}, "
-          f"test {test['label_delayed'].mean():.3f}")
-    return {"train": train_path, "test": test_path, "lookups": LOOKUPS_PATH}
+    print(f"  wrote {', '.join(str(p.name) for p in outputs.values())} + lookups.json")
+    print(f"  delayed>15min base rates: train {train['label_delayed'].mean():.3f}, "
+          f"test {test['label_delayed'].mean():.3f}"
+          + (f", oot_2025 {oot['label_delayed'].mean():.3f}" if len(oot) else ""))
+    return outputs
 
 
 if __name__ == "__main__":

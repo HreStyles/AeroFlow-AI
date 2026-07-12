@@ -75,11 +75,17 @@ def run_scenario(scenario: dict, predictor) -> dict:
     sorted_flights = sorted(
         flights_dict.values(), key=lambda f: f["scheduled_departure"]
     )
+    # realized_delays feeds the network-state features: as the runner walks
+    # the schedule chronologically, each flight's known delay (injected or
+    # predicted P50) becomes observable state for LATER flights — the same
+    # trailing-window/inbound-tail signal the model saw in training.
+    realized_delays: dict[str, float] = {}
     context = {
         "flights": list(flights_dict.values()),
         "airport_config": airport_config,
         "day_of_week": day_of_week,
         "month": month,
+        "realized_delays": realized_delays,
     }
 
     for flight in sorted_flights:
@@ -118,6 +124,10 @@ def run_scenario(scenario: dict, predictor) -> dict:
             "provenance": provenance_all.get(fid, {}),
         }
 
+        # Feed this flight's known delay back into the network state consumed
+        # by later flights' predictions (injected floor ∨ predicted median)
+        realized_delays[fid] = max(prediction["p50_minutes"], injected_minutes)
+
         if prediction["probability"] > DELAY_PROBABILITY_THRESHOLD or injected_minutes:
             pred_time = _offset_time(flight["scheduled_departure"], -15)
             log.add_event(pred_time, "delay_predicted", fid, prediction)
@@ -129,7 +139,14 @@ def run_scenario(scenario: dict, predictor) -> dict:
                 q: max(prediction[f"{q}_minutes"], injected_minutes)
                 for q in QUANTILE_WEIGHTS
             }
-            if delays["p50"] > MIN_MEANINGFUL_DELAY_MINUTES:
+            # Gate on the EXPECTED delay over the distribution, not the
+            # median: a flight whose median outcome is on-time can still
+            # carry decision-worthy tail risk (P50=0, P90=120 ⇒ E=30) —
+            # exactly the case a median-gated system would ignore.
+            expected_delay = sum(
+                QUANTILE_WEIGHTS[q] * delays[q] for q in QUANTILE_WEIGHTS
+            )
+            if expected_delay > MIN_MEANINGFUL_DELAY_MINUTES:
                 cascades = {
                     q: sim_engine.propagate_delay(fid, d, flights_dict)
                     for q, d in delays.items()

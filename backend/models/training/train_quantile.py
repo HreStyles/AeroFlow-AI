@@ -19,7 +19,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # backend/
 
-from config import FEATURE_NAMES, PROCESSED_DATA_DIR, QUANTILE_PATH  # noqa: E402
+from config import (  # noqa: E402
+    CATEGORICAL_FEATURES,
+    FEATURE_NAMES,
+    PROCESSED_DATA_DIR,
+    QUANTILE_PATH,
+)
 
 QUANTILES = {"p10": 0.1, "p50": 0.5, "p90": 0.9}
 
@@ -56,7 +61,8 @@ def train(train_path: Path | None = None,
     for name, alpha in QUANTILES.items():
         params = {**BASE_PARAMS, "alpha": alpha}
         dfit = lgb.Dataset(fit_df[FEATURE_NAMES], label=fit_df["label_delay_minutes"],
-                           feature_name=FEATURE_NAMES)
+                           feature_name=FEATURE_NAMES,
+                           categorical_feature=CATEGORICAL_FEATURES)
         dval = lgb.Dataset(val_df[FEATURE_NAMES], label=val_df["label_delay_minutes"],
                            reference=dfit)
         probe = lgb.train(
@@ -68,7 +74,8 @@ def train(train_path: Path | None = None,
         # Refit on the full training window at the selected iteration count
         dtrain = lgb.Dataset(train_df[FEATURE_NAMES],
                              label=train_df["label_delay_minutes"],
-                             feature_name=FEATURE_NAMES)
+                             feature_name=FEATURE_NAMES,
+                             categorical_feature=CATEGORICAL_FEATURES)
         booster = lgb.train(params, dtrain, num_boost_round=rounds)
 
         out = base.with_name(f"{base.stem}_{name}.txt")

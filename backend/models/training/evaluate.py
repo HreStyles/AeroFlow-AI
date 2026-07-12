@@ -17,6 +17,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from sklearn.calibration import calibration_curve
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     average_precision_score,
@@ -149,9 +150,14 @@ def evaluate(test_path: Path | None = None) -> dict:
     }
 
     # ── Reference baselines (any claimed GBDT lift is measured vs these) ─────
+    # Median imputation for the LR only: linear models can't route NaN the
+    # way LightGBM does. Categorical codes enter as crude numerics — it is a
+    # floor, and treating it as such is the point.
     print("Training logistic-regression baseline…")
     logistic = make_pipeline(
-        StandardScaler(), LogisticRegression(max_iter=2000, random_state=42)
+        SimpleImputer(strategy="median"),
+        StandardScaler(),
+        LogisticRegression(max_iter=2000, random_state=42),
     )
     logistic.fit(train_df[FEATURE_NAMES], train_df["label_delayed"])
     logit_proba = logistic.predict_proba(X)[:, 1]
@@ -229,6 +235,50 @@ def evaluate(test_path: Path | None = None) -> dict:
     report["quantile"]["interval_80_coverage"] = round(
         float(np.mean((y_reg >= preds["p10"]) & (y_reg <= preds["p90"]))), 4
     )
+
+    # ── Monthly degradation: AUC by distance from the training frontier ──────
+    monthly = []
+    test_df["_month"] = test_df["FlightDate"].dt.to_period("M").astype(str)
+    for m, g in test_df.groupby("_month"):
+        p = clf.predict(g[FEATURE_NAMES])
+        monthly.append({
+            "month": m,
+            "n": int(len(g)),
+            "positive_rate": round(float(g["label_delayed"].mean()), 4),
+            "auc": round(float(roc_auc_score(g["label_delayed"], p)), 4),
+        })
+
+    # ── Out-of-time 2025: an entire year the model never saw ────────────────
+    oot_path = PROCESSED_DATA_DIR / "oot_2025.parquet"
+    if oot_path.exists():
+        oot_df = pd.read_parquet(oot_path)
+        oot_proba = clf.predict(oot_df[FEATURE_NAMES])
+        oot_y = oot_df["label_delayed"].to_numpy()
+        report["oot_2025"] = {
+            "n": int(len(oot_df)),
+            "positive_rate": round(float(oot_y.mean()), 4),
+            "auc_roc": round(float(roc_auc_score(oot_y, oot_proba)), 4),
+            "pr_auc": round(float(average_precision_score(oot_y, oot_proba)), 4),
+            "note": "entirely unseen calendar year; aggregates and "
+                    "normalizers frozen at the 2024-05 training boundary",
+        }
+        oot_df["_month"] = oot_df["FlightDate"].dt.to_period("M").astype(str)
+        for m, g in oot_df.groupby("_month"):
+            p = clf.predict(g[FEATURE_NAMES])
+            monthly.append({
+                "month": m,
+                "n": int(len(g)),
+                "positive_rate": round(float(g["label_delayed"].mean()), 4),
+                "auc": round(float(roc_auc_score(g["label_delayed"], p)), 4),
+            })
+        print(f"  UNSEEN-YEAR (2025) AUC: {report['oot_2025']['auc_roc']:.4f} "
+              f"on {len(oot_df):,} flights")
+
+    report["monthly_degradation"] = monthly
+    print("  monthly AUC (distance from training frontier):")
+    for row in monthly:
+        print(f"    {row['month']}: AUC {row['auc']:.4f} "
+              f"(n={row['n']:,}, base rate {row['positive_rate']:.3f})")
 
     EVALUATION_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(EVALUATION_REPORT_PATH, "w") as fp:
