@@ -49,7 +49,8 @@ class EventLogBuilder:
 
     def build(self, validation: dict, flights: list[dict] | None = None,
               provenance: dict | None = None,
-              prediction_source: str = "") -> dict:
+              prediction_source: str = "",
+              cost_model: dict | None = None) -> dict:
         """Sort chronologically and assemble the final EventLog dict."""
         self.events.sort(key=lambda e: e["sim_time"])
         return {
@@ -61,4 +62,5 @@ class EventLogBuilder:
             "validation": validation,
             "flights": flights or [],
             "provenance": provenance or {},
+            "cost_model": cost_model or {},
         }

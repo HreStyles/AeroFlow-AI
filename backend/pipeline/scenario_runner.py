@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from config import (
     CASCADE_COST_THRESHOLD,
+    COST_WEIGHT_DERIVATIONS,
     DEFAULT_COST_WEIGHTS,
     DELAY_PROBABILITY_THRESHOLD,
     MIN_MEANINGFUL_DELAY_MINUTES,
@@ -187,6 +188,11 @@ def run_scenario(scenario: dict, predictor) -> dict:
         flights=list(flights_dict.values()),
         provenance=provenance_all,
         prediction_source=prediction_source,
+        cost_model={
+            "version": "v2-literature-anchored",
+            "weights": cost_weights,
+            "derivations": COST_WEIGHT_DERIVATIONS,
+        },
     )
 
 
@@ -258,8 +264,9 @@ def _sensitivity_analysis(cascade: dict, flights_dict: dict, airport_config: dic
     base_top = base_opt["ranked_options"][0]["action_type"]
 
     perturb_keys = [
-        "passenger_delay_per_minute", "missed_connection_per_pax",
-        "gate_conflict_penalty", "aircraft_swap_cost",
+        "passenger_delay_per_minute", "aircraft_operating_cost_per_minute",
+        "missed_connection_per_pax", "gate_conflict_base",
+        "aircraft_swap_cost",
     ]
     stable = 0
     total = 0

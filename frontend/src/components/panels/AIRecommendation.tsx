@@ -2,15 +2,17 @@
 // impact, feasibility checks, and cost comparison.
 import type { TimedEvent } from "../../hooks/useSimulation";
 import type { RankedOption } from "../../types/recommendations";
+import type { CostModel } from "../../types/scenario";
 import CostBreakdown from "../shared/CostBreakdown";
 import { formatCost, formatMinutes, formatPct } from "../../utils/formatting";
 
 interface Props {
   recommendation: TimedEvent | null;
   cascade: TimedEvent | null;
+  costModel?: CostModel;
 }
 
-export default function AIRecommendation({ recommendation, cascade }: Props) {
+export default function AIRecommendation({ recommendation, cascade, costModel }: Props) {
   if (!recommendation) {
     return (
       <div className="aero-card h-full flex flex-col">
@@ -77,7 +79,11 @@ export default function AIRecommendation({ recommendation, cascade }: Props) {
         </div>
       </div>
 
-      <CostBreakdown baseline={baseline} optionCost={top.expected_cost} />
+      <CostBreakdown
+        baseline={baseline}
+        optionCost={top.expected_cost}
+        costModel={costModel}
+      />
       <div
         className="text-[10px] text-aero-muted font-mono flex justify-between"
         title="Each action is costed at the P10, P50 and P90 predicted delays; options are ranked by the 0.25/0.50/0.25 weighted expected cost"

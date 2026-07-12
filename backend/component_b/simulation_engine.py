@@ -137,21 +137,37 @@ class SimulationEngine:
         return results
 
     def _price_cascade(self, results: dict, trigger: dict) -> float:
+        """Price a cascade with the v2 literature-anchored cost model:
+        passenger value-of-time + aircraft direct operating cost (the delay
+        costs the airline even with zero pax aboard) + itemized missed
+        connections + causal gate-conflict pricing (base + per-overlap-minute)
+        + crew overtime. Downstream terms carry the variance discount."""
         w = self.cost_weights
         pax = trigger.get("total_passengers") or 150
         delay = results["trigger_delay_minutes"]
+        downstream = results["total_downstream_delay_minutes"]
 
         crew_hours = trigger.get("crew_hours_on_duty") or 0.0
         # Crew overtime accrues when the delay pushes an already-long duty day
         # past 12h (approaching the 14h FAA-style limit)
         crew_overtime_hours = max(0.0, (crew_hours + delay / 60.0) - 12.0)
 
+        gate_conflict_cost = sum(
+            w["gate_conflict_base"]
+            + w["gate_conflict_per_overlap_minute"] * gc["conflict_minutes"]
+            for gc in results["gate_conflicts"]
+        )
+
         return round(
-            pax * delay * w["passenger_delay_per_minute"]
+            # Trigger flight: pax time + aircraft time
+            delay * (pax * w["passenger_delay_per_minute"]
+                     + w["aircraft_operating_cost_per_minute"])
             + results["missed_connections"] * w["missed_connection_per_pax"]
-            + len(results["gate_conflicts"]) * w["gate_conflict_penalty"]
-            + results["total_downstream_delay_minutes"] * pax
-            * w["passenger_delay_per_minute"] * DOWNSTREAM_COST_DISCOUNT
+            + gate_conflict_cost
+            # Downstream flights: same two time terms, variance-discounted
+            + downstream * (pax * w["passenger_delay_per_minute"]
+                            + w["aircraft_operating_cost_per_minute"])
+            * DOWNSTREAM_COST_DISCOUNT
             + crew_overtime_hours * w["crew_overtime_per_hour"],
             2,
         )

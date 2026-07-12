@@ -87,13 +87,16 @@ class Flight(BaseModel):
 
 
 class CostWeights(BaseModel):
-    """Configurable cost function weights — exposed as sliders in the UI."""
-    passenger_delay_per_minute: float = 2.50          # $/pax/min
-    missed_connection_per_pax: float = 300.0          # $/pax
-    crew_overtime_per_hour: float = 500.0             # $/crew-hr
-    gate_conflict_penalty: float = 1000.0             # $ per conflict
-    aircraft_swap_cost: float = 1200.0                # $ per swap
-    fuel_taxi_per_minute: float = 50.0                # $ per minute of excess taxi
+    """Configurable cost function weights — literature-anchored defaults
+    (see config.COST_WEIGHT_DERIVATIONS); policy inputs, not constants."""
+    passenger_delay_per_minute: float = 0.80          # $/pax/min (US DOT VOT)
+    aircraft_operating_cost_per_minute: float = 75.0  # $/aircraft-min (A4A)
+    missed_connection_per_pax: float = 350.0          # $/pax (itemized)
+    crew_overtime_per_hour: float = 550.0             # $/crew-hr
+    gate_conflict_base: float = 400.0                 # $ per conflict
+    gate_conflict_per_overlap_minute: float = 60.0    # $ per overlap-min
+    aircraft_swap_cost: float = 1500.0                # $ per swap
+    fuel_taxi_per_minute: float = 18.0                # $ per excess-taxi-min
 
 
 class RunwayLayout(BaseModel):
@@ -189,6 +192,7 @@ class EventLog(BaseModel):
     validation: ValidationResults
     flights: list[dict] = []                          # completed flights (for map/UI)
     provenance: dict[str, dict] = {}                  # flight_id → field → provenance
+    cost_model: dict = {}                             # weights + derivation strings
 
 
 class DecisionRequest(BaseModel):

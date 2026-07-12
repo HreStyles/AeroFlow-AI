@@ -96,13 +96,58 @@ CONGESTION_MAP = {"low": 0.2, "moderate": 0.5, "high": 0.75, "severe": 1.0}
 CONGESTION_LEVELS = list(CONGESTION_MAP.keys())
 
 # ─── Cost function weights (defaults; always overridable per scenario) ───────
+# v2 — literature-anchored (engineering review §8). Every weight carries a
+# derivation string surfaced in UI tooltips; these are policy inputs that a
+# deployment would tune to its own economics.
 DEFAULT_COST_WEIGHTS = {
-    "passenger_delay_per_minute": 2.50,   # $/pax/min
-    "missed_connection_per_pax": 300.0,   # $/pax
-    "crew_overtime_per_hour": 500.0,      # $/crew-hr
-    "gate_conflict_penalty": 1000.0,      # $ per conflict
-    "aircraft_swap_cost": 1200.0,         # $ per swap
-    "fuel_taxi_per_minute": 50.0,         # $ per minute of excess taxi
+    "passenger_delay_per_minute": 0.80,          # $/pax/min
+    "aircraft_operating_cost_per_minute": 75.0,  # $/aircraft/min of delay
+    "missed_connection_per_pax": 350.0,          # $/pax
+    "crew_overtime_per_hour": 550.0,             # $/crew-hr
+    "gate_conflict_base": 400.0,                 # $ per conflict (tow/re-plan)
+    "gate_conflict_per_overlap_minute": 60.0,    # $ per minute of overlap
+    "aircraft_swap_cost": 1500.0,                # $ per swap
+    "fuel_taxi_per_minute": 18.0,                # $ per minute of excess taxi
+}
+
+COST_WEIGHT_DERIVATIONS = {
+    "passenger_delay_per_minute": (
+        "US DOT Revised Departmental Guidance on Valuation of Travel Time "
+        "(2016): ~$48/hr for air passengers ÷ 60 min ≈ $0.80/pax-min"
+    ),
+    "aircraft_operating_cost_per_minute": (
+        "Airlines for America (A4A) direct aircraft operating cost "
+        "≈ $100/block-minute (2023, US pax carriers); EUROCONTROL/Univ. of "
+        "Westminster reference values €80–110/min. Conservative $75/min for "
+        "at-gate delay (no airborne fuel burn)"
+    ),
+    "missed_connection_per_pax": (
+        "Itemized reaccommodation: rebooking ≈ $150 + hotel/meals ≈ $120 + "
+        "goodwill ≈ $80 ≈ $350/pax. EU261 statutory €250–600 is the "
+        "international upper bound (Bratu & Barnhart 2005 for pax-delay framing)"
+    ),
+    "crew_overtime_per_hour": (
+        "Narrowbody crew (2 pilots + 4 FA) fully-loaded ≈ $1,300/block-hr × "
+        "~40% overtime-premium exposure ≈ $550/hr"
+    ),
+    "gate_conflict_base": (
+        "Fixed component per conflict: tow/repositioning $200–400 + ramp "
+        "re-planning ≈ $400"
+    ),
+    "gate_conflict_per_overlap_minute": (
+        "Variable component: arriving aircraft held on taxiway ≈ $60/min "
+        "(taxi fuel + aircraft time + queue knock-on), scaled by simulated "
+        "overlap minutes — makes the penalty causal rather than flat"
+    ),
+    "aircraft_swap_cost": (
+        "Tow + dispatch re-release + new flight plan + crew brief + schedule "
+        "perturbation risk ≈ $1,500. Thin literature — operator-tunable, "
+        "low-confidence anchor (disclosed)"
+    ),
+    "fuel_taxi_per_minute": (
+        "737-800 taxi burn ≈ 10–12 kg/min × ~$0.90/kg jet-A ≈ $10/min + "
+        "engine-time maintenance reserve ≈ $8/min ≈ $18/min"
+    ),
 }
 
 # ─── Pipeline thresholds ─────────────────────────────────────────────────────

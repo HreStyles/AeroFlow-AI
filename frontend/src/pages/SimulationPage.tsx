@@ -118,6 +118,7 @@ export default function SimulationPage() {
           <AIRecommendation
             recommendation={sim.activeRecommendation}
             cascade={sim.activeCascade}
+            costModel={eventLog.cost_model}
           />
         </div>
 
