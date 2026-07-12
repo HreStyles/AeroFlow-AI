@@ -22,7 +22,7 @@ CLASSIFIER_PATH = MODELS_DIR / "classifier.txt"
 # base name — actual files are quantile_p10.txt / quantile_p50.txt / quantile_p90.txt.
 QUANTILE_PATH = MODELS_DIR / "quantile.txt"
 LOOKUPS_PATH = MODELS_DIR / "lookups.json"
-EVALUATION_REPORT_PATH = MODELS_DIR / "evaluation_report.json"
+EVALUATION_REPORT_PATH = PROCESSED_DATA_DIR / "evaluation_report.json"
 SHAP_GLOBAL_PATH = MODELS_DIR / "shap_global.json"
 
 MODEL_NOT_TRAINED_MESSAGE = (
@@ -32,6 +32,8 @@ MODEL_NOT_TRAINED_MESSAGE = (
 
 # ─── Feature names (exact order used in training AND inference) ──────────────
 FEATURE_NAMES = [
+    # weather (TAF forecast when available, observed METAR otherwise, NaN when
+    # neither — LightGBM routes missing values natively)
     "origin_weather_severity", "dest_weather_severity",
     "origin_congestion_numeric", "dest_congestion_numeric",
     "schedule_slack_minutes", "rotation_position",
@@ -39,7 +41,31 @@ FEATURE_NAMES = [
     "month", "route_avg_delay", "carrier_ontime_pct",
     "aircraft_age_years", "seating_capacity",
     "weather_x_congestion",  # interaction feature
+    # network-state features (derived from already-departed flights only —
+    # the system's live state, the largest signal at operational horizons)
+    "trailing_2h_airport_mean_delay",
+    "trailing_4h_airport_mean_delay",
+    "trailing_2h_delayed_flight_share",
+    "inbound_tail_delay",       # previous leg's arrival delay for this tail
+    # weather metadata (missingness and forecast-vs-observed are signal)
+    "weather_is_forecast",
+    "weather_data_available",
+    # calendar
+    "is_federal_holiday",
+    "days_to_nearest_holiday",
+    # identity (native LightGBM categoricals, codes from saved level lists)
+    "carrier",
+    "origin_airport",
+    "dest_airport",
 ]
+
+# Passed to LightGBM's categorical_feature; encoded as integer codes against
+# the level lists persisted in lookups.json (unseen level → -1 → missing)
+CATEGORICAL_FEATURES = ["carrier", "origin_airport", "dest_airport"]
+
+# TAF decision horizon: use the latest forecast issued at least this long
+# before scheduled departure (an operator deciding 2h out has no later info)
+TAF_HORIZON_HOURS = 2
 
 # ─── Aircraft data tables (published figures) ────────────────────────────────
 # Typical single-class-equivalent seating capacity
@@ -96,13 +122,58 @@ CONGESTION_MAP = {"low": 0.2, "moderate": 0.5, "high": 0.75, "severe": 1.0}
 CONGESTION_LEVELS = list(CONGESTION_MAP.keys())
 
 # ─── Cost function weights (defaults; always overridable per scenario) ───────
+# v2 — literature-anchored (engineering review §8). Every weight carries a
+# derivation string surfaced in UI tooltips; these are policy inputs that a
+# deployment would tune to its own economics.
 DEFAULT_COST_WEIGHTS = {
-    "passenger_delay_per_minute": 2.50,   # $/pax/min
-    "missed_connection_per_pax": 300.0,   # $/pax
-    "crew_overtime_per_hour": 500.0,      # $/crew-hr
-    "gate_conflict_penalty": 1000.0,      # $ per conflict
-    "aircraft_swap_cost": 1200.0,         # $ per swap
-    "fuel_taxi_per_minute": 50.0,         # $ per minute of excess taxi
+    "passenger_delay_per_minute": 0.80,          # $/pax/min
+    "aircraft_operating_cost_per_minute": 75.0,  # $/aircraft/min of delay
+    "missed_connection_per_pax": 350.0,          # $/pax
+    "crew_overtime_per_hour": 550.0,             # $/crew-hr
+    "gate_conflict_base": 400.0,                 # $ per conflict (tow/re-plan)
+    "gate_conflict_per_overlap_minute": 60.0,    # $ per minute of overlap
+    "aircraft_swap_cost": 1500.0,                # $ per swap
+    "fuel_taxi_per_minute": 18.0,                # $ per minute of excess taxi
+}
+
+COST_WEIGHT_DERIVATIONS = {
+    "passenger_delay_per_minute": (
+        "US DOT Revised Departmental Guidance on Valuation of Travel Time "
+        "(2016): ~$48/hr for air passengers ÷ 60 min ≈ $0.80/pax-min"
+    ),
+    "aircraft_operating_cost_per_minute": (
+        "Airlines for America (A4A) direct aircraft operating cost "
+        "≈ $100/block-minute (2023, US pax carriers); EUROCONTROL/Univ. of "
+        "Westminster reference values €80–110/min. Conservative $75/min for "
+        "at-gate delay (no airborne fuel burn)"
+    ),
+    "missed_connection_per_pax": (
+        "Itemized reaccommodation: rebooking ≈ $150 + hotel/meals ≈ $120 + "
+        "goodwill ≈ $80 ≈ $350/pax. EU261 statutory €250–600 is the "
+        "international upper bound (Bratu & Barnhart 2005 for pax-delay framing)"
+    ),
+    "crew_overtime_per_hour": (
+        "Narrowbody crew (2 pilots + 4 FA) fully-loaded ≈ $1,300/block-hr × "
+        "~40% overtime-premium exposure ≈ $550/hr"
+    ),
+    "gate_conflict_base": (
+        "Fixed component per conflict: tow/repositioning $200–400 + ramp "
+        "re-planning ≈ $400"
+    ),
+    "gate_conflict_per_overlap_minute": (
+        "Variable component: arriving aircraft held on taxiway ≈ $60/min "
+        "(taxi fuel + aircraft time + queue knock-on), scaled by simulated "
+        "overlap minutes — makes the penalty causal rather than flat"
+    ),
+    "aircraft_swap_cost": (
+        "Tow + dispatch re-release + new flight plan + crew brief + schedule "
+        "perturbation risk ≈ $1,500. Thin literature — operator-tunable, "
+        "low-confidence anchor (disclosed)"
+    ),
+    "fuel_taxi_per_minute": (
+        "737-800 taxi burn ≈ 10–12 kg/min × ~$0.90/kg jet-A ≈ $10/min + "
+        "engine-time maintenance reserve ≈ $8/min ≈ $18/min"
+    ),
 }
 
 # ─── Pipeline thresholds ─────────────────────────────────────────────────────
@@ -113,6 +184,12 @@ CASCADE_COST_THRESHOLD = 500.0      # only run the optimizer above this cost
 # Downstream cascade delay is priced at a discount vs the trigger flight's own
 # delay (downstream pax counts are estimates, not observed).
 DOWNSTREAM_COST_DISCOUNT = 0.5
+
+# Distribution-aware optimization: candidate actions are costed at the P10,
+# P50, and P90 predicted delays and ranked by the weighted expected cost —
+# a 3-point quadrature over the predictive distribution. Weights follow the
+# standard light/middle/tail split for symmetric 3-point rules.
+QUANTILE_WEIGHTS = {"p10": 0.25, "p50": 0.50, "p90": 0.25}
 
 # Confidence normalization: a P90-P10 spread of this many minutes → 0 confidence
 CONFIDENCE_SPREAD_NORM_MINUTES = 180.0

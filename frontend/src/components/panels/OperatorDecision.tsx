@@ -44,11 +44,15 @@ export default function OperatorDecision({
   };
 
   return (
-    <div className="aero-card p-3 h-full flex flex-col gap-2 min-h-0">
-      <span className="aero-label">Operator decision</span>
-
+    <div className="aero-card h-full flex flex-col min-h-0">
+      <div className="panel-header">
+        <span className="panel-title">Operator decision</span>
+        <span className="ml-auto text-[9px] font-mono text-aero-muted">human-in-the-loop</span>
+      </div>
+      <div className="p-3 flex-1 flex flex-col gap-2 min-h-0">
       {!recommendation ? (
-        <div className="flex-1 flex items-center justify-center text-aero-muted text-xs">
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-aero-muted text-xs">
+          <span className="text-2xl opacity-40">☑</span>
           Awaiting recommendation
         </div>
       ) : decided ? (
@@ -132,6 +136,7 @@ export default function OperatorDecision({
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

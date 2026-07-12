@@ -64,13 +64,23 @@ export interface Flight {
   estimated_boarding_minutes?: number;
 }
 
+// v2 literature-anchored cost model — each weight ships with a derivation
+// string (see EventLog.cost_model.derivations) surfaced in UI tooltips.
 export interface CostWeights {
   passenger_delay_per_minute: number;
+  aircraft_operating_cost_per_minute: number;
   missed_connection_per_pax: number;
   crew_overtime_per_hour: number;
-  gate_conflict_penalty: number;
+  gate_conflict_base: number;
+  gate_conflict_per_overlap_minute: number;
   aircraft_swap_cost: number;
   fuel_taxi_per_minute: number;
+}
+
+export interface CostModel {
+  version: string;
+  weights: CostWeights;
+  derivations: Record<string, string>;
 }
 
 export interface GDPEvent {

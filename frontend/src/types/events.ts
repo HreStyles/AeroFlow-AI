@@ -1,5 +1,5 @@
 // Mirrors backend SimEvent / EventLog / ValidationResults schemas
-import type { Flight } from "./scenario";
+import type { CostModel, Flight } from "./scenario";
 import type { RankedOption } from "./recommendations";
 
 export type EventType =
@@ -95,4 +95,5 @@ export interface EventLog {
   validation: ValidationResults;
   flights: Flight[];
   provenance: Record<string, Record<string, string>>;
+  cost_model?: CostModel;
 }

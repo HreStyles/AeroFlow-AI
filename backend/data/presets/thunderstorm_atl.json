@@ -102,11 +102,13 @@
   ],
   "gdp_events": [],
   "cost_weights": {
-    "passenger_delay_per_minute": 2.5,
-    "missed_connection_per_pax": 300.0,
-    "crew_overtime_per_hour": 500.0,
-    "gate_conflict_penalty": 1000.0,
-    "aircraft_swap_cost": 1200.0,
-    "fuel_taxi_per_minute": 50.0
+    "passenger_delay_per_minute": 0.8,
+    "aircraft_operating_cost_per_minute": 75.0,
+    "missed_connection_per_pax": 350.0,
+    "crew_overtime_per_hour": 550.0,
+    "gate_conflict_base": 400.0,
+    "gate_conflict_per_overlap_minute": 60.0,
+    "aircraft_swap_cost": 1500.0,
+    "fuel_taxi_per_minute": 18.0
   }
 }

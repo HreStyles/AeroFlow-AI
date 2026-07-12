@@ -20,6 +20,10 @@ body,
 
 body {
   @apply bg-aero-bg text-aero-text font-sans antialiased;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(59, 130, 246, 0.06), transparent),
+    radial-gradient(ellipse 60% 40% at 90% 110%, rgba(239, 68, 68, 0.04), transparent);
+  font-feature-settings: "tnum" 1, "cv05" 1;
 }
 
 /* Dense operations-tool scrollbars */
@@ -28,31 +32,50 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--aero-bg);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--aero-border);
   border-radius: 4px;
 }
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
 
 @layer components {
   .aero-card {
-    @apply bg-aero-card border border-aero-border rounded-lg;
+    @apply bg-aero-card border border-aero-border rounded-lg shadow-panel;
   }
   .aero-label {
-    @apply text-[10px] font-semibold uppercase tracking-wider text-aero-muted;
+    @apply text-[10px] font-semibold uppercase tracking-[0.12em] text-aero-muted;
+  }
+  /* Standard panel header: icon + title + right slot, hairline below */
+  .panel-header {
+    @apply flex items-center gap-2 px-3 py-2 border-b border-aero-border/70 shrink-0;
+  }
+  .panel-title {
+    @apply text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400;
   }
   .aero-input {
     @apply w-full bg-aero-bg border border-aero-border rounded px-2 py-1.5 text-sm
-      focus:outline-none focus:border-aero-blue placeholder:text-slate-600;
+      focus:outline-none focus:border-aero-blue focus:ring-1 focus:ring-aero-blue/30
+      placeholder:text-slate-600 transition-colors;
   }
   .aero-btn {
-    @apply px-3 py-1.5 rounded text-sm font-medium border border-aero-border
-      hover:border-aero-blue transition-colors disabled:opacity-40
-      disabled:cursor-not-allowed;
+    @apply px-3 py-1.5 rounded-md text-sm font-medium border border-aero-border
+      hover:border-aero-blue/60 hover:bg-aero-blue/5 transition-all
+      disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98];
   }
   .aero-btn-primary {
-    @apply aero-btn bg-aero-blue border-aero-blue text-white hover:bg-blue-600;
+    @apply aero-btn bg-aero-blue border-aero-blue text-white hover:bg-blue-600
+      hover:border-blue-600 shadow-glow;
+  }
+  .stat-tile {
+    @apply bg-aero-bg/70 border border-aero-border/60 rounded-md px-2.5 py-2;
+  }
+  .status-chip {
+    @apply inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5
+      rounded border leading-none;
   }
 }
 
@@ -62,4 +85,27 @@ body {
 }
 .animate-pulse-alert {
   animation: pulse-alert 1.6s ease-in-out infinite;
+}
+
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in {
+  animation: slide-in-right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up {
+  animation: fade-up 0.3s ease-out;
+}
+
+@keyframes dash-flow {
+  to { stroke-dashoffset: -24; }
+}
+.animate-dash-flow {
+  animation: dash-flow 1.2s linear infinite;
 }
